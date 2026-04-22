@@ -1,0 +1,183 @@
+{
+  "name": "scrcpy-sidebar",
+  "displayName": "Scrcpy Sidebar",
+  "description": "Display and control remote Android devices from a VS Code sidebar in code-server.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:dream10201/scrcpy_sidebar.git"
+  },
+  "homepage": "https://github.com/dream10201/scrcpy_sidebar",
+  "bugs": {
+    "url": "https://github.com/dream10201/scrcpy_sidebar/issues"
+  },
+  "type": "commonjs",
+  "files": [
+    "dist/**",
+    "media/**",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:scrcpySidebar.view",
+    "onCommand:scrcpySidebar.selectDevice",
+    "onCommand:scrcpySidebar.disconnect",
+    "onCommand:scrcpySidebar.reconnect"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "scrcpySidebar",
+          "title": "Android Screen",
+          "icon": "media/android.svg"
+        }
+      ]
+    },
+    "views": {
+      "scrcpySidebar": [
+        {
+          "id": "scrcpySidebar.view",
+          "name": "Devices",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "scrcpySidebar.selectDevice",
+        "title": "Scrcpy Sidebar: Select Device"
+      },
+      {
+        "command": "scrcpySidebar.disconnect",
+        "title": "Scrcpy Sidebar: Disconnect Device"
+      },
+      {
+        "command": "scrcpySidebar.reconnect",
+        "title": "Scrcpy Sidebar: Reconnect Device"
+      }
+    ],
+    "configuration": {
+      "title": "Scrcpy Sidebar",
+      "properties": {
+        "scrcpySidebar.adbHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "ADB server host."
+        },
+        "scrcpySidebar.adbPort": {
+          "type": "number",
+          "default": 5037,
+          "description": "ADB server port."
+        },
+        "scrcpySidebar.scrcpyServerVersion": {
+          "type": "string",
+          "default": "3.3.4",
+          "description": "scrcpy-server version downloaded during dependency installation."
+        },
+        "scrcpySidebar.maxFps": {
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "description": "Default maximum FPS. 0 lets scrcpy choose."
+        },
+        "scrcpySidebar.maxSize": {
+          "type": "number",
+          "default": 1280,
+          "minimum": 0,
+          "description": "Default maximum video size. 0 keeps original size."
+        },
+        "scrcpySidebar.videoBitRate": {
+          "type": "number",
+          "default": 3000000,
+          "minimum": 1000000,
+          "description": "Default scrcpy video bitrate."
+        },
+        "scrcpySidebar.videoCodec": {
+          "type": "string",
+          "enum": [
+            "h264",
+            "h265",
+            "av1"
+          ],
+          "default": "h264",
+          "description": "Preferred video codec."
+        },
+        "scrcpySidebar.autoReconnectDelayMs": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 1000,
+          "description": "Delay before trying to reconnect after disconnect."
+        },
+        "scrcpySidebar.rootMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "always",
+          "description": "How scrcpy server should use su/root when available."
+        },
+        "scrcpySidebar.screenOffOnStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Turn off device screen after scrcpy control starts."
+        },
+        "scrcpySidebar.keepScreenAwake": {
+          "type": "boolean",
+          "default": true,
+          "description": "Temporarily set screen timeout to a very large value while connected, then restore it on disconnect."
+        },
+        "scrcpySidebar.audioEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Experimental audio streaming toggle."
+        },
+        "scrcpySidebar.audioCodec": {
+          "type": "string",
+          "enum": [
+            "opus",
+            "aac"
+          ],
+          "default": "aac",
+          "description": "Preferred audio codec for experimental browser playback."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && npx @vscode/vsce package",
+    "prepare": "npm run build",
+    "postinstall": "node node_modules/@yume-chan/fetch-scrcpy-server/bin/fetch-server.js 3.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.25.11",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@yume-chan/adb": "^2.6.0",
+    "@yume-chan/adb-scrcpy": "^2.3.2",
+    "@yume-chan/adb-server-node-tcp": "^2.5.2",
+    "@yume-chan/fetch-scrcpy-server": "^1.0.0",
+    "@yume-chan/scrcpy": "^2.3.0",
+    "@yume-chan/scrcpy-decoder-webcodecs": "^2.5.3"
+  }
+}

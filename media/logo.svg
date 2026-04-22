@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Scrcpy Sidebar logo">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#101828"/>
+      <stop offset="100%" stop-color="#1d2939"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#88d66c"/>
+      <stop offset="100%" stop-color="#46b97a"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#59b5ff"/>
+      <stop offset="100%" stop-color="#2c74ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="66" y="84" width="128" height="344" rx="28" fill="url(#panel)"/>
+  <rect x="92" y="118" width="76" height="9" rx="4.5" fill="#dce7ff" opacity=".85"/>
+  <rect x="92" y="148" width="76" height="76" rx="16" fill="#dce7ff" opacity=".18"/>
+  <rect x="92" y="242" width="76" height="14" rx="7" fill="#dce7ff" opacity=".65"/>
+  <rect x="92" y="274" width="56" height="14" rx="7" fill="#dce7ff" opacity=".35"/>
+  <rect x="196" y="60" width="250" height="392" rx="54" fill="#0b0f19"/>
+  <rect x="214" y="98" width="214" height="318" rx="28" fill="url(#screen)"/>
+  <rect x="283" y="76" width="76" height="10" rx="5" fill="#2a3447"/>
+  <path d="M260 126c10-20 30-30 61-30s51 10 61 30h-18c-7-10-20-16-43-16s-36 6-43 16Zm-28 2 22-31 11 6-22 31Zm158-25 22 31-11 7-23-32Z" fill="#eef7ea"/>
+  <circle cx="288" cy="200" r="11" fill="#eef7ea"/>
+  <circle cx="354" cy="200" r="11" fill="#eef7ea"/>
+  <path d="M265 252c17 17 36 26 56 26s39-9 56-26" fill="none" stroke="#eef7ea" stroke-linecap="round" stroke-width="18"/>
+  <circle cx="398" cy="378" r="42" fill="#ffffff"/>
+  <path d="M398 352v26M380 396c8 8 28 8 36 0" fill="none" stroke="#2c74ff" stroke-linecap="round" stroke-width="16"/>
+</svg>
