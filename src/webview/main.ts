@@ -56,6 +56,24 @@ let firstFrameNotified = false;
 let decodedPacketCount = 0;
 let currentStatus = "idle";
 
+const specialKeyboardMap: Record<string, string> = {
+  Enter: "Enter",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Tab: "Tab",
+  Escape: "Escape",
+  ArrowUp: "ArrowUp",
+  ArrowDown: "ArrowDown",
+  ArrowLeft: "ArrowLeft",
+  ArrowRight: "ArrowRight",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+  Insert: "Insert",
+  " ": "Space",
+};
+
 function post(message: WebviewToExtensionMessage): void {
   vscode.postMessage(message);
 }
@@ -170,7 +188,7 @@ async function startStream(payload: StreamStartPayload): Promise<void> {
   bitrateInput.value = String(payload.config.videoBitRate);
   codecInput.value = payload.config.videoCodec;
   rootModeInput.value = payload.config.rootMode ?? "always";
-  screenOffInput.checked = payload.config.screenOffOnStart ?? false;
+  screenOffInput.checked = payload.config.screenOffOnStart ?? true;
   keepAwakeInput.checked = payload.config.keepScreenAwake ?? false;
   audioEnabledInput.checked = payload.config.audioEnabled ?? false;
   audioCodecInput.value = payload.config.audioCodec ?? "aac";
@@ -315,6 +333,7 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
   event.preventDefault();
+  canvas.focus();
   activePointerId = event.pointerId;
   canvas.setPointerCapture(event.pointerId);
   sendPointer("down", event);
@@ -348,6 +367,57 @@ canvas.addEventListener("pointercancel", (event) => {
 
 canvas.addEventListener("contextmenu", (event) => {
   event.preventDefault();
+});
+
+function handleKeyboardEvent(event: KeyboardEvent, action: "down" | "up"): void {
+  if (!currentStream || !playerPage.classList.contains("active") || document.activeElement !== canvas) {
+    return;
+  }
+
+  const target = event.target;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return;
+  }
+
+  const special = specialKeyboardMap[event.key];
+  const isPlainText =
+    action === "down" &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    event.key.length === 1 &&
+    !special;
+
+  if (isPlainText) {
+    event.preventDefault();
+    post({ type: "keyboard-text", text: event.key });
+    return;
+  }
+
+  event.preventDefault();
+  post({
+    type: "keyboard-event",
+    action,
+    key: special ?? event.key,
+    code: event.code,
+    repeat: event.repeat,
+    ctrlKey: event.ctrlKey,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    metaKey: event.metaKey,
+  });
+}
+
+canvas.addEventListener("keydown", (event) => {
+  handleKeyboardEvent(event, "down");
+});
+
+canvas.addEventListener("keyup", (event) => {
+  handleKeyboardEvent(event, "up");
 });
 
 document.querySelector<HTMLButtonElement>("#settingsBtn")!.addEventListener("click", () => {

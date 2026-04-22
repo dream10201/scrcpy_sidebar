@@ -1,9 +1,5 @@
 # Scrcpy Sidebar
 
-<p align="center">
-  <img src="./media/logo.svg" alt="Scrcpy Sidebar logo" width="140" />
-</p>
-
 一个面向 `code-server` / `VS Code Web` 的 Android 投屏侧边栏扩展。  
 它把 `scrcpy` 的视频与控制能力收进侧边栏里，适合在浏览器版 VS Code 中直接查看和操作远程设备。
 

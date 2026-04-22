@@ -15,7 +15,7 @@ function getConfig(): ExtensionConfig {
     autoReconnectDelayMs: config.get("autoReconnectDelayMs", 3000),
     scrcpyServerVersion: config.get("scrcpyServerVersion", "3.3.4"),
     rootMode: config.get("rootMode", "always"),
-    screenOffOnStart: config.get("screenOffOnStart", false),
+    screenOffOnStart: config.get("screenOffOnStart", true),
     keepScreenAwake: config.get("keepScreenAwake", true),
     audioEnabled: config.get("audioEnabled", false),
     audioCodec: config.get("audioCodec", "aac"),
@@ -140,7 +140,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
               <div class="screen-notch"></div>
             </div>
             <div class="screen-stage">
-              <canvas id="screen"></canvas>
+              <canvas id="screen" tabindex="0"></canvas>
               <div id="overlay" class="overlay" aria-hidden="true"></div>
             </div>
             <div class="floating-actions">

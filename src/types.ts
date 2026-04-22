@@ -69,6 +69,19 @@ export type WebviewToExtensionMessage =
   | { type: "video-ready" }
   | { type: "decoder-error"; detail: string }
   | { type: "key"; key: "back" | "home" | "appSwitch" | "power" }
+  | { type: "keyboard-text"; text: string }
+  | { type: "keyboard-key"; key: string }
+  | {
+      type: "keyboard-event";
+      action: "down" | "up";
+      key: string;
+      code: string;
+      repeat: boolean;
+      ctrlKey: boolean;
+      altKey: boolean;
+      shiftKey: boolean;
+      metaKey: boolean;
+    }
   | { type: "apply-config"; config: Partial<StreamConfig> }
   | {
       type: "pointer";

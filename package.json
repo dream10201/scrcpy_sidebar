@@ -8,7 +8,7 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "git@github.com:dream10201/scrcpy_sidebar.git"
+    "url": "https://github.com/dream10201/scrcpy_sidebar"
   },
   "homepage": "https://github.com/dream10201/scrcpy_sidebar",
   "bugs": {
@@ -132,7 +132,7 @@
         },
         "scrcpySidebar.screenOffOnStart": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Turn off device screen after scrcpy control starts."
         },
         "scrcpySidebar.keepScreenAwake": {

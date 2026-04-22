@@ -152,6 +152,15 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       case "key":
         await this.injectKey(message.key);
         return;
+      case "keyboard-text":
+        await this.injectKeyboardText(message.text);
+        return;
+      case "keyboard-key":
+        await this.injectKeyboardKey(message.key);
+        return;
+      case "keyboard-event":
+        await this.injectKeyboardEvent(message);
+        return;
       case "apply-config":
         this.currentStreamConfig = {
           ...this.currentStreamConfig,
@@ -596,7 +605,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
   private async injectKey(key: "back" | "home" | "appSwitch" | "power"): Promise<void> {
     const controller = this.scrcpyClient?.controller;
-    if (!controller) {
+    const serial = this.currentSerial;
+    if (!serial) {
       return;
     }
 
@@ -609,7 +619,15 @@ export class ScrcpySidebarSession implements vscode.Disposable {
             ? AndroidKeyCode.AndroidAppSwitch
             : AndroidKeyCode.Power;
 
+    if (key === "power") {
+      await this.injectKeyViaAdb(serial, "26");
+      return;
+    }
+
     try {
+      if (!controller) {
+        throw new Error("scrcpy controller unavailable");
+      }
       await controller.injectKeyCode({
         action: AndroidKeyEventAction.Down,
         keyCode,
@@ -624,6 +642,243 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       });
     } catch (error) {
       this.output.appendLine(`injectKey failed (${key}): ${String(error)}`);
+      const fallback =
+        key === "back" ? "4" :
+        key === "home" ? "3" :
+        key === "appSwitch" ? "187" :
+        "26";
+      await this.injectKeyViaAdb(serial, fallback);
+    }
+  }
+
+  private async injectKeyboardText(text: string): Promise<void> {
+    const controller = this.scrcpyClient?.controller;
+    const serial = this.currentSerial;
+    if (!serial || !text) {
+      return;
+    }
+
+    try {
+      if (!controller) {
+        throw new Error("scrcpy controller unavailable");
+      }
+      await controller.injectText(text);
+    } catch (error) {
+      this.output.appendLine(`injectText failed (${JSON.stringify(text)}): ${String(error)}`);
+      await this.injectTextViaAdb(serial, text);
+    }
+  }
+
+  private async injectKeyboardKey(key: string): Promise<void> {
+    const mapping: Record<string, { android: (typeof AndroidKeyCode)[keyof typeof AndroidKeyCode]; adb: string }> = {
+      Enter: { android: AndroidKeyCode.Enter, adb: "66" },
+      Backspace: { android: AndroidKeyCode.Backspace, adb: "67" },
+      Delete: { android: AndroidKeyCode.Delete, adb: "112" },
+      Tab: { android: AndroidKeyCode.Tab, adb: "61" },
+      Escape: { android: AndroidKeyCode.Escape, adb: "111" },
+      ArrowUp: { android: AndroidKeyCode.ArrowUp, adb: "19" },
+      ArrowDown: { android: AndroidKeyCode.ArrowDown, adb: "20" },
+      ArrowLeft: { android: AndroidKeyCode.ArrowLeft, adb: "21" },
+      ArrowRight: { android: AndroidKeyCode.ArrowRight, adb: "22" },
+      Home: { android: AndroidKeyCode.Home, adb: "122" },
+      End: { android: AndroidKeyCode.End, adb: "123" },
+      PageUp: { android: AndroidKeyCode.PageUp, adb: "92" },
+      PageDown: { android: AndroidKeyCode.PageDown, adb: "93" },
+      Insert: { android: AndroidKeyCode.Insert, adb: "124" },
+      Space: { android: AndroidKeyCode.Space, adb: "62" },
+    };
+
+    const target = mapping[key];
+    if (!target) {
+      return;
+    }
+
+    const controller = this.scrcpyClient?.controller;
+    const serial = this.currentSerial;
+    if (!serial) {
+      return;
+    }
+
+    try {
+      if (!controller) {
+        throw new Error("scrcpy controller unavailable");
+      }
+      await controller.injectKeyCode({
+        action: AndroidKeyEventAction.Down,
+        keyCode: target.android,
+        repeat: 0,
+        metaState: AndroidKeyEventMeta.None,
+      });
+      await controller.injectKeyCode({
+        action: AndroidKeyEventAction.Up,
+        keyCode: target.android,
+        repeat: 0,
+        metaState: AndroidKeyEventMeta.None,
+      });
+    } catch (error) {
+      this.output.appendLine(`injectKeyboardKey failed (${key}): ${String(error)}`);
+      await this.injectKeyViaAdb(serial, target.adb);
+    }
+  }
+
+  private async injectKeyboardEvent(
+    message: Extract<WebviewToExtensionMessage, { type: "keyboard-event" }>,
+  ): Promise<void> {
+    const controller = this.scrcpyClient?.controller;
+    const serial = this.currentSerial;
+    if (!serial || message.repeat) {
+      return;
+    }
+
+    const metaState = ((
+      (message.altKey ? AndroidKeyEventMeta.Alt : 0) |
+      (message.shiftKey ? AndroidKeyEventMeta.Shift : 0) |
+      (message.ctrlKey ? AndroidKeyEventMeta.Ctrl : 0) |
+      (message.metaKey ? AndroidKeyEventMeta.Meta : 0)
+    ) as AndroidKeyEventMeta);
+
+    const target = this.mapKeyboardCode(message.code, message.key);
+    if (!target) {
+      return;
+    }
+
+    try {
+      if (!controller) {
+        throw new Error("scrcpy controller unavailable");
+      }
+      await controller.injectKeyCode({
+        action: message.action === "down" ? AndroidKeyEventAction.Down : AndroidKeyEventAction.Up,
+        keyCode: target.android,
+        repeat: 0,
+        metaState,
+      });
+    } catch (error) {
+      this.output.appendLine(`injectKeyboardEvent failed (${message.code}/${message.key}): ${String(error)}`);
+      if (message.action === "down") {
+        await this.injectKeyViaAdb(serial, target.adb);
+      }
+    }
+  }
+
+  private mapKeyboardCode(
+    code: string,
+    key: string,
+  ): { android: (typeof AndroidKeyCode)[keyof typeof AndroidKeyCode]; adb: string } | undefined {
+    const byCode: Record<string, { android: (typeof AndroidKeyCode)[keyof typeof AndroidKeyCode]; adb: string }> = {
+      Backquote: { android: AndroidKeyCode.Backquote, adb: "68" },
+      Minus: { android: AndroidKeyCode.Minus, adb: "69" },
+      Equal: { android: AndroidKeyCode.Equal, adb: "70" },
+      BracketLeft: { android: AndroidKeyCode.BracketLeft, adb: "71" },
+      BracketRight: { android: AndroidKeyCode.BracketRight, adb: "72" },
+      Backslash: { android: AndroidKeyCode.Backslash, adb: "73" },
+      Semicolon: { android: AndroidKeyCode.Semicolon, adb: "74" },
+      Quote: { android: AndroidKeyCode.Quote, adb: "75" },
+      Comma: { android: AndroidKeyCode.Comma, adb: "55" },
+      Period: { android: AndroidKeyCode.Period, adb: "56" },
+      Slash: { android: AndroidKeyCode.Slash, adb: "76" },
+      Space: { android: AndroidKeyCode.Space, adb: "62" },
+      Tab: { android: AndroidKeyCode.Tab, adb: "61" },
+      Enter: { android: AndroidKeyCode.Enter, adb: "66" },
+      NumpadEnter: { android: AndroidKeyCode.NumpadEnter, adb: "160" },
+      Backspace: { android: AndroidKeyCode.Backspace, adb: "67" },
+      Delete: { android: AndroidKeyCode.Delete, adb: "112" },
+      Escape: { android: AndroidKeyCode.Escape, adb: "111" },
+      ArrowUp: { android: AndroidKeyCode.ArrowUp, adb: "19" },
+      ArrowDown: { android: AndroidKeyCode.ArrowDown, adb: "20" },
+      ArrowLeft: { android: AndroidKeyCode.ArrowLeft, adb: "21" },
+      ArrowRight: { android: AndroidKeyCode.ArrowRight, adb: "22" },
+      Home: { android: AndroidKeyCode.Home, adb: "122" },
+      End: { android: AndroidKeyCode.End, adb: "123" },
+      PageUp: { android: AndroidKeyCode.PageUp, adb: "92" },
+      PageDown: { android: AndroidKeyCode.PageDown, adb: "93" },
+      Insert: { android: AndroidKeyCode.Insert, adb: "124" },
+      ShiftLeft: { android: AndroidKeyCode.ShiftLeft, adb: "59" },
+      ShiftRight: { android: AndroidKeyCode.ShiftRight, adb: "60" },
+      ControlLeft: { android: AndroidKeyCode.ControlLeft, adb: "113" },
+      ControlRight: { android: AndroidKeyCode.ControlRight, adb: "114" },
+      AltLeft: { android: AndroidKeyCode.AltLeft, adb: "57" },
+      AltRight: { android: AndroidKeyCode.AltRight, adb: "58" },
+      MetaLeft: { android: AndroidKeyCode.MetaLeft, adb: "117" },
+      MetaRight: { android: AndroidKeyCode.MetaRight, adb: "118" },
+      CapsLock: { android: AndroidKeyCode.CapsLock, adb: "115" },
+      ContextMenu: { android: AndroidKeyCode.ContextMenu, adb: "82" },
+      F1: { android: AndroidKeyCode.F1, adb: "131" },
+      F2: { android: AndroidKeyCode.F2, adb: "132" },
+      F3: { android: AndroidKeyCode.F3, adb: "133" },
+      F4: { android: AndroidKeyCode.F4, adb: "134" },
+      F5: { android: AndroidKeyCode.F5, adb: "135" },
+      F6: { android: AndroidKeyCode.F6, adb: "136" },
+      F7: { android: AndroidKeyCode.F7, adb: "137" },
+      F8: { android: AndroidKeyCode.F8, adb: "138" },
+      F9: { android: AndroidKeyCode.F9, adb: "139" },
+      F10: { android: AndroidKeyCode.F10, adb: "140" },
+      F11: { android: AndroidKeyCode.F11, adb: "141" },
+      F12: { android: AndroidKeyCode.F12, adb: "142" },
+      Numpad0: { android: AndroidKeyCode.Numpad0, adb: "144" },
+      Numpad1: { android: AndroidKeyCode.Numpad1, adb: "145" },
+      Numpad2: { android: AndroidKeyCode.Numpad2, adb: "146" },
+      Numpad3: { android: AndroidKeyCode.Numpad3, adb: "147" },
+      Numpad4: { android: AndroidKeyCode.Numpad4, adb: "148" },
+      Numpad5: { android: AndroidKeyCode.Numpad5, adb: "149" },
+      Numpad6: { android: AndroidKeyCode.Numpad6, adb: "150" },
+      Numpad7: { android: AndroidKeyCode.Numpad7, adb: "151" },
+      Numpad8: { android: AndroidKeyCode.Numpad8, adb: "152" },
+      Numpad9: { android: AndroidKeyCode.Numpad9, adb: "153" },
+      NumpadAdd: { android: AndroidKeyCode.NumpadAdd, adb: "157" },
+      NumpadSubtract: { android: AndroidKeyCode.NumpadSubtract, adb: "156" },
+      NumpadMultiply: { android: AndroidKeyCode.NumpadMultiply, adb: "155" },
+      NumpadDivide: { android: AndroidKeyCode.NumpadDivide, adb: "154" },
+      NumpadDecimal: { android: AndroidKeyCode.NumpadDecimal, adb: "158" },
+    };
+
+    const direct = byCode[code];
+    if (direct) {
+      return direct;
+    }
+
+    if (/^Key[A-Z]$/.test(code)) {
+      const android = AndroidKeyCode[code as keyof typeof AndroidKeyCode];
+      if (android !== undefined) {
+        return { android, adb: String(android) };
+      }
+    }
+
+    if (/^Digit[0-9]$/.test(code)) {
+      const android = AndroidKeyCode[code as keyof typeof AndroidKeyCode];
+      if (android !== undefined) {
+        return { android, adb: String(android) };
+      }
+    }
+
+    if (key === "Space") {
+      return { android: AndroidKeyCode.Space, adb: "62" };
+    }
+
+    return undefined;
+  }
+
+  private async injectKeyViaAdb(serial: string, keyCode: string): Promise<void> {
+    try {
+      const adb = await this.client.createAdb({ serial });
+      const preferRoot = this.activeControlMode === "root" || this.currentRootMode === "always";
+      await this.runDeviceCommand(adb, ["input", "keyevent", keyCode], preferRoot);
+      this.output.appendLine(`injectKey fallback via adb shell input keyevent ${keyCode}`);
+    } catch (error) {
+      this.output.appendLine(`injectKey fallback failed (${keyCode}): ${String(error)}`);
+    }
+  }
+
+  private async injectTextViaAdb(serial: string, text: string): Promise<void> {
+    try {
+      const adb = await this.client.createAdb({ serial });
+      const preferRoot = this.activeControlMode === "root" || this.currentRootMode === "always";
+      const escaped = text
+        .replace(/ /g, "%s")
+        .replace(/(["'`\\$&|;<>(){}\[\]])/g, "\\$1");
+      await this.runDeviceCommand(adb, ["input", "text", escaped], preferRoot);
+      this.output.appendLine(`injectText fallback via adb shell input text ${JSON.stringify(text)}`);
+    } catch (error) {
+      this.output.appendLine(`injectText fallback failed (${JSON.stringify(text)}): ${String(error)}`);
     }
   }
 
