@@ -75,7 +75,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private streamSize = { width: 0, height: 0 };
   private videoPacketsSent = 0;
   private isPointerDown = false;
-  private rootAvailable?: boolean;
+  private readonly rootAvailability = new Map<string, boolean>();
   private activeControlMode: "standard" | "root" = "standard";
   private forcedControlMode?: "standard" | "root";
   private rootUpgradeScheduled = false;
@@ -1146,19 +1146,24 @@ while (true) {
   }
 
   private async checkRoot(adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>): Promise<boolean> {
-    if (this.rootAvailable !== undefined) {
-      return this.rootAvailable;
+    const serial = this.currentSerial;
+    if (serial && this.rootAvailability.has(serial)) {
+      return this.rootAvailability.get(serial)!;
     }
 
+    let rootAvailable = false;
     try {
       const result = await adb.subprocess.noneProtocol.spawnWaitText(["su", "-c", "id"]);
-      this.rootAvailable = result.includes("uid=0");
+      rootAvailable = result.includes("uid=0");
     } catch {
-      this.rootAvailable = false;
+      rootAvailable = false;
     }
 
-    this.output.appendLine(`root available: ${this.rootAvailable}`);
-    return this.rootAvailable;
+    if (serial) {
+      this.rootAvailability.set(serial, rootAvailable);
+    }
+    this.output.appendLine(`root available (${serial ?? "unknown"}): ${rootAvailable}`);
+    return rootAvailable;
   }
 
   private createOptions(spawner: AdbNoneProtocolSpawner | undefined): AdbScrcpyOptionsLatest<true> {
@@ -1204,11 +1209,14 @@ while (true) {
       : [preferredMode];
 
     let lastError: unknown;
+    let attempted = false;
 
     for (const mode of tryModes) {
       if (mode === "root" && !(await this.checkRoot(adb))) {
+        lastError = new Error("SU/root is not available on this device");
         continue;
       }
+      attempted = true;
 
       await this.post({
         type: "state",
@@ -1229,6 +1237,17 @@ while (true) {
         }
         throw error;
       }
+    }
+
+    if (!attempted && preferredMode === "root") {
+      await this.post({
+        type: "state",
+        status: "connecting",
+        detail: "SU 不可用，回退到标准模式",
+        mode: "standard",
+      });
+      const scrcpyClient = await AdbScrcpyClient.start(adb, serverPath, this.createOptions(undefined));
+      return { scrcpyClient, controlMode: "standard" };
     }
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
