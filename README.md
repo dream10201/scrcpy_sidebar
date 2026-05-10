@@ -101,7 +101,9 @@ npx @vscode/vsce package
 - 默认使用 `H.264`
 - 默认使用 `su`
 - 默认开启“连接期间保持常亮”
-- 默认不在连接后立即熄屏
+- 默认在视频首帧渲染后熄灭设备屏幕
+- `scrcpySidebar.keepScreenAwake` 会临时修改设备 `screen_off_timeout`，断开连接时会尝试恢复原值
+- 运行时修改播放参数会同步到侧边栏；修改 ADB Host、ADB Port 或 scrcpy-server 版本会重建会话
 
 ## GitHub Actions
 
@@ -119,6 +121,7 @@ npx @vscode/vsce package
 
 - `H.265` / `AV1` 在部分浏览器 webview 中可能无法稳定解码，因此默认仍为 `H.264`
 - 音频能力目前仍属于实验性功能
+- `scrcpySidebar.scrcpyServerVersion` 应与打包进 `media/scrcpy-server.bin` 的版本保持一致；默认安装脚本会下载 `3.3.4`
 - 多个 `code-server` 标签页可能各自启动独立 extension host，因此仍可能出现多会话并行
 
 ## License

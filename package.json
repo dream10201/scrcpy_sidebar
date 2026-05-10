@@ -161,6 +161,7 @@
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build",
     "package": "npm run build && npx @vscode/vsce package",
     "prepare": "npm run build",
     "postinstall": "node node_modules/@yume-chan/fetch-scrcpy-server/bin/fetch-server.js 3.3.4"

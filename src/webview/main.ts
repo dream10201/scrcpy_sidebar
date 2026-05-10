@@ -86,6 +86,29 @@ function setStatus(text: string, extra?: string): void {
   updateConnectButton();
 }
 
+function setConfigInputs(config: StreamStartPayload["config"]): void {
+  fpsInput.value = String(config.maxFps);
+  sizeInput.value = String(config.maxSize);
+  bitrateInput.value = String(config.videoBitRate);
+  codecInput.value = config.videoCodec;
+  rootModeInput.value = config.rootMode ?? "always";
+  screenOffInput.checked = config.screenOffOnStart ?? true;
+  keepAwakeInput.checked = config.keepScreenAwake ?? true;
+  audioEnabledInput.checked = config.audioEnabled ?? false;
+  audioCodecInput.value = config.audioCodec ?? "aac";
+}
+
+function readNumberInput(input: HTMLInputElement, min: number): number | undefined {
+  const value = Number(input.value);
+  if (!Number.isFinite(value) || value < min) {
+    input.setCustomValidity(`请输入不小于 ${min} 的数字`);
+    input.reportValidity();
+    return undefined;
+  }
+  input.setCustomValidity("");
+  return Math.floor(value);
+}
+
 function setMode(mode?: "standard" | "root" | "pending" | "view-only"): void {
   const label =
     mode === "standard" ? "Standard" :
@@ -183,15 +206,7 @@ async function startStream(payload: StreamStartPayload): Promise<void> {
   currentStream = payload;
   deviceLabel.textContent = payload.deviceName;
   deviceSub.textContent = `${payload.serial} · ${payload.width}×${payload.height}`;
-  fpsInput.value = String(payload.config.maxFps);
-  sizeInput.value = String(payload.config.maxSize);
-  bitrateInput.value = String(payload.config.videoBitRate);
-  codecInput.value = payload.config.videoCodec;
-  rootModeInput.value = payload.config.rootMode ?? "always";
-  screenOffInput.checked = payload.config.screenOffOnStart ?? true;
-  keepAwakeInput.checked = payload.config.keepScreenAwake ?? false;
-  audioEnabledInput.checked = payload.config.audioEnabled ?? false;
-  audioCodecInput.value = payload.config.audioCodec ?? "aac";
+  setConfigInputs(payload.config);
 
   try {
     const renderer = WebGLVideoFrameRenderer.isSupported
@@ -458,12 +473,20 @@ document.querySelector<HTMLButtonElement>("#powerBtn")!.addEventListener("click"
 });
 
 document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click", () => {
+  const maxFps = readNumberInput(fpsInput, 0);
+  const maxSize = readNumberInput(sizeInput, 0);
+  const videoBitRate = readNumberInput(bitrateInput, 1000000);
+  if (maxFps === undefined || maxSize === undefined || videoBitRate === undefined) {
+    setStatus("参数无效", "请检查播放设置里的数字输入");
+    return;
+  }
+
   post({
     type: "apply-config",
     config: {
-      maxFps: Number(fpsInput.value),
-      maxSize: Number(sizeInput.value),
-      videoBitRate: Number(bitrateInput.value),
+      maxFps,
+      maxSize,
+      videoBitRate,
       videoCodec: codecInput.value as "h264" | "h265" | "av1",
       rootMode: rootModeInput.value as "auto" | "always" | "never",
       screenOffOnStart: screenOffInput.checked,
@@ -481,6 +504,9 @@ window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessag
       setStatus(message.status, message.detail);
       setOverlayVisible(message.status !== "streaming");
       setMode(message.mode);
+      return;
+    case "config":
+      setConfigInputs(message.config);
       return;
     case "stream-start":
       void startStream(message.payload);

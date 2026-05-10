@@ -85,6 +85,30 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.session = new ScrcpySidebarSession(this.context, this.output, getConfig(), this.view.webview);
   }
 
+  async handleConfigurationChange(event: vscode.ConfigurationChangeEvent): Promise<void> {
+    if (!event.affectsConfiguration("scrcpySidebar")) {
+      return;
+    }
+
+    const nextConfig = getConfig();
+    if (!this.session) {
+      return;
+    }
+
+    const needsSessionReset = await this.session.applyConfig(nextConfig);
+    if (!needsSessionReset) {
+      return;
+    }
+
+    await this.session.disposeAsync("ADB/server settings changed");
+    this.session = undefined;
+    if (this.view) {
+      const session = new ScrcpySidebarSession(this.context, this.output, nextConfig, this.view.webview);
+      this.session = session;
+      await session.initialize();
+    }
+  }
+
   private async renderHtml(webview: vscode.Webview): Promise<string> {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview.js"));
     const nonce = String(Date.now());
@@ -246,6 +270,9 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     provider,
     vscode.window.registerWebviewViewProvider("scrcpySidebar.view", provider),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      void provider.handleConfigurationChange(event);
+    }),
     vscode.commands.registerCommand("scrcpySidebar.selectDevice", async () => {
       await provider.selectDevice();
     }),

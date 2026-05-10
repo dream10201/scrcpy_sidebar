@@ -63,6 +63,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly client: AdbServerClient;
   private readonly webview: WebviewLike;
+  private config: ExtensionConfig;
   private currentSerial?: string;
   private reconnectTimer?: NodeJS.Timeout;
   private manuallyDisconnected = false;
@@ -81,18 +82,24 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private rootUpgradeScheduled = false;
   private lastScrcpyLogs: string[] = [];
   private connectInFlight = false;
+  private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root" };
   private screenPowerOffPending = false;
   private codecFallbackScheduled = false;
   private previousScreenTimeout?: string;
   private screenTimeoutWatchdog?: ChildProcess;
+  private webviewMessageQueue: ExtensionToWebviewMessage[] = [];
+  private webviewMessageDrainRunning = false;
+  private queuedVideoMessages = 0;
+  private readonly maxQueuedVideoMessages = 24;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
-    private readonly config: ExtensionConfig,
+    config: ExtensionConfig,
     webview: WebviewLike,
   ) {
     this.webview = webview;
+    this.config = config;
     this.client = new AdbServerClient(
       new AdbServerNodeTcpConnector({
         host: config.adbHost,
@@ -113,18 +120,75 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   }
 
   async initialize(): Promise<void> {
+    await this.post({
+      type: "config",
+      config: this.currentStreamConfig,
+    });
     await this.refreshDevices();
   }
 
   dispose(): void {
-    void this.stop("Session disposed");
+    void this.disposeAsync("Session disposed");
+  }
+
+  async disposeAsync(detail?: string): Promise<void> {
+    await this.stop(detail ?? "Session disposed");
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
     }
     this.scrcpyAbort.abort();
+    this.pendingConnect = undefined;
+    this.webviewMessageQueue = [];
+    this.queuedVideoMessages = 0;
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
+  }
+
+  async applyConfig(nextConfig: ExtensionConfig): Promise<boolean> {
+    const requiresSessionReset =
+      this.config.adbHost !== nextConfig.adbHost ||
+      this.config.adbPort !== nextConfig.adbPort ||
+      this.config.scrcpyServerVersion !== nextConfig.scrcpyServerVersion;
+    const shouldReconnect =
+      !requiresSessionReset &&
+      this.currentSerial !== undefined &&
+      (
+        this.config.maxFps !== nextConfig.maxFps ||
+        this.config.maxSize !== nextConfig.maxSize ||
+        this.config.videoBitRate !== nextConfig.videoBitRate ||
+        this.config.videoCodec !== nextConfig.videoCodec ||
+        this.config.rootMode !== nextConfig.rootMode ||
+        this.config.screenOffOnStart !== nextConfig.screenOffOnStart ||
+        this.config.keepScreenAwake !== nextConfig.keepScreenAwake ||
+        this.config.audioEnabled !== nextConfig.audioEnabled ||
+        this.config.audioCodec !== nextConfig.audioCodec
+      );
+
+    this.config = nextConfig;
+    this.currentStreamConfig = {
+      ...this.currentStreamConfig,
+      maxFps: nextConfig.maxFps,
+      maxSize: nextConfig.maxSize,
+      videoBitRate: nextConfig.videoBitRate,
+      videoCodec: nextConfig.videoCodec,
+      screenOffOnStart: nextConfig.screenOffOnStart,
+      keepScreenAwake: nextConfig.keepScreenAwake,
+      audioEnabled: nextConfig.audioEnabled,
+      audioCodec: nextConfig.audioCodec,
+      rootMode: nextConfig.rootMode,
+    };
+    this.currentRootMode = nextConfig.rootMode;
+    void this.post({
+      type: "config",
+      config: this.currentStreamConfig,
+    });
+    if (shouldReconnect) {
+      await this.reconnect();
+    }
+
+    return requiresSessionReset;
   }
 
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
@@ -169,6 +233,10 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         if (message.config.rootMode) {
           this.currentRootMode = message.config.rootMode;
         }
+        void this.post({
+          type: "config",
+          config: this.currentStreamConfig,
+        });
         if (this.currentSerial) {
           await this.reconnect();
         }
@@ -340,7 +408,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
   private async connect(serial: string, name: string, forcedMode?: "standard" | "root"): Promise<void> {
     if (this.connectInFlight) {
-      this.output.appendLine(`connect skipped: already connecting to ${this.currentSerial ?? serial}`);
+      this.pendingConnect = { serial, name, forcedMode };
+      this.output.appendLine(`connect queued while another connect is active: ${serial}`);
       return;
     }
 
@@ -371,6 +440,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
     try {
       const adb = await this.client.createAdb({ serial });
+      this.warnIfBundledServerVersionMayDiffer();
       const serverPath = await this.pushServerToDevice(adb, serial);
       const rootAvailable = await this.checkRoot(adb);
       const preferredMode =
@@ -461,7 +531,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
               pts: value.type === "data" && value.pts !== undefined ? value.pts.toString() : undefined,
             };
             this.videoPacketsSent += 1;
-            void this.webview.postMessage({ type: "video", packet });
+            void this.post({ type: "video", packet });
           }
         } finally {
           reader.releaseLock();
@@ -486,6 +556,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       await this.scheduleReconnect();
     } finally {
       this.connectInFlight = false;
+      const pending = this.pendingConnect;
+      this.pendingConnect = undefined;
+      if (pending) {
+        await this.connect(pending.serial, pending.name, pending.forcedMode);
+      }
     }
   }
 
@@ -914,6 +989,15 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     return DefaultServerPath;
   }
 
+  private warnIfBundledServerVersionMayDiffer(): void {
+    const packageVersion = this.context.extension.packageJSON?.contributes?.configuration?.properties?.["scrcpySidebar.scrcpyServerVersion"]?.default;
+    if (typeof packageVersion === "string" && packageVersion !== this.config.scrcpyServerVersion) {
+      this.output.appendLine(
+        `scrcpyServerVersion is ${this.config.scrcpyServerVersion}, but the bundled scrcpy-server.bin was installed for ${packageVersion}`,
+      );
+    }
+  }
+
   private async runDeviceCommand(
     adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
     command: string[],
@@ -1231,6 +1315,9 @@ while (true) {
       } catch (error) {
         lastError = error;
         this.output.appendLine(`scrcpy start failed (${mode}): ${String(error)}`);
+        if (mode === "root" && this.isRootUnavailableError(error)) {
+          this.rootAvailability.delete(this.currentSerial ?? "");
+        }
         if (mode === "standard" && fallbackMode === "root" && this.shouldRetryWithRoot(error)) {
           this.output.appendLine("falling back to root mode because input injection was denied");
           continue;
@@ -1254,6 +1341,49 @@ while (true) {
   }
 
   private async post(message: ExtensionToWebviewMessage): Promise<void> {
-    await this.webview.postMessage(message);
+    if (message.type === "video") {
+      if (this.queuedVideoMessages >= this.maxQueuedVideoMessages) {
+        if (message.packet.type === "data" && !message.packet.keyframe) {
+          return;
+        }
+        this.dropOldestQueuedDeltaFrame();
+      }
+      this.queuedVideoMessages += 1;
+    }
+
+    this.webviewMessageQueue.push(message);
+    if (!this.webviewMessageDrainRunning) {
+      this.webviewMessageDrainRunning = true;
+      while (this.webviewMessageQueue.length) {
+        const next = this.webviewMessageQueue.shift();
+        if (!next) {
+          continue;
+        }
+        if (next.type === "video") {
+          this.queuedVideoMessages = Math.max(0, this.queuedVideoMessages - 1);
+        }
+        try {
+          await this.webview.postMessage(next);
+        } catch (error) {
+          this.output.appendLine(`webview post failed: ${String(error)}`);
+        }
+      }
+      this.webviewMessageDrainRunning = false;
+    }
+  }
+
+  private dropOldestQueuedDeltaFrame(): void {
+    const index = this.webviewMessageQueue.findIndex((item) =>
+      item.type === "video" && item.packet.type === "data" && !item.packet.keyframe,
+    );
+    if (index >= 0) {
+      this.webviewMessageQueue.splice(index, 1);
+      this.queuedVideoMessages = Math.max(0, this.queuedVideoMessages - 1);
+    }
+  }
+
+  private isRootUnavailableError(error: unknown): boolean {
+    const text = String(error);
+    return text.includes("su") || text.includes("not found") || text.includes("permission denied");
   }
 }

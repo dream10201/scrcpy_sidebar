@@ -52,6 +52,7 @@ export interface VideoPacketPayload {
 
 export type ExtensionToWebviewMessage =
   | { type: "state"; status: string; detail?: string; mode?: "standard" | "root" | "pending" | "view-only" }
+  | { type: "config"; config: StreamConfig }
   | { type: "devices"; devices: DeviceSummary[]; currentSerial?: string }
   | { type: "stream-start"; payload: StreamStartPayload }
   | { type: "stream-stop"; detail?: string }
