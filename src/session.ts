@@ -84,6 +84,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private connectInFlight = false;
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root" };
   private screenPowerOffPending = false;
+  private screenPowerOffTimer?: NodeJS.Timeout;
   private codecFallbackScheduled = false;
   private webviewMessageQueue: ExtensionToWebviewMessage[] = [];
   private webviewMessageDrainRunning = false;
@@ -154,7 +155,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       this.config.scrcpyServerVersion !== nextConfig.scrcpyServerVersion;
     const shouldReconnect =
       !requiresSessionReset &&
-      this.currentSerial !== undefined &&
+      this.scrcpyClient !== undefined &&
       (
         this.config.maxFps !== nextConfig.maxFps ||
         this.config.maxSize !== nextConfig.maxSize ||
@@ -208,6 +209,10 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         return;
       case "disconnect":
         this.manuallyDisconnected = true;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = undefined;
+        }
         await this.stop("Disconnected");
         return;
       case "reconnect":
@@ -437,6 +442,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       this.warnIfBundledServerVersionMayDiffer();
       const serverPath = await this.pushServerToDevice(adb, serial);
       const rootAvailable = await this.checkRoot(adb);
+      await this.prepareDevicePowerForStreaming(adb);
       const preferredMode =
         forcedMode
           ? forcedMode
@@ -578,6 +584,10 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.scrcpyAbort.abort();
     this.scrcpyAbort = new AbortController();
     this.screenPowerOffPending = false;
+    if (this.screenPowerOffTimer) {
+      clearTimeout(this.screenPowerOffTimer);
+      this.screenPowerOffTimer = undefined;
+    }
 
     if (this.videoLoop) {
       try {
@@ -994,23 +1004,78 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     return await adb.subprocess.noneProtocol.spawnWaitText(command);
   }
 
+  private async getDisplayPowerState(
+    adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
+  ): Promise<"on" | "off" | "unknown"> {
+    try {
+      const output = await this.runDeviceCommand(adb, ["dumpsys", "display"]);
+      const match = output.match(/Display State=(ON|OFF)/);
+      if (match) {
+        return match[1] === "ON" ? "on" : "off";
+      }
+    } catch (error) {
+      this.output.appendLine(`getDisplayPowerState failed: ${String(error)}`);
+    }
+
+    return "unknown";
+  }
+
+  private async prepareDevicePowerForStreaming(
+    adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
+  ): Promise<void> {
+    if (this.currentStreamConfig.powerOnOnStart) {
+      return;
+    }
+
+    if (!this.currentStreamConfig.screenOffOnStart) {
+      return;
+    }
+
+    const displayState = await this.getDisplayPowerState(adb);
+    if (displayState !== "off") {
+      return;
+    }
+
+    this.output.appendLine("display is already off before connect; waking device briefly so capture can start");
+    try {
+      await this.runDeviceCommand(adb, ["input", "keyevent", "KEYCODE_WAKEUP"]);
+      await sleep(500);
+    } catch (error) {
+      this.output.appendLine(`temporary wake failed: ${String(error)}`);
+    }
+  }
+
   private async applyPendingScreenPowerOff(): Promise<void> {
     if (!this.screenPowerOffPending) {
       return;
     }
 
-    const controller = this.scrcpyClient?.controller;
-    if (!controller) {
+    const scrcpyClient = this.scrcpyClient;
+    const controller = scrcpyClient?.controller;
+    if (!scrcpyClient || !controller) {
       return;
     }
 
-    this.screenPowerOffPending = false;
-    try {
-      await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
-      this.output.appendLine("device screen turned off after first video frame");
-    } catch (error) {
-      this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
+    if (this.screenPowerOffTimer) {
+      return;
     }
+
+    this.output.appendLine("scheduling screen power off shortly after first video frame");
+    this.screenPowerOffTimer = setTimeout(() => {
+      this.screenPowerOffTimer = undefined;
+      if (!this.screenPowerOffPending || this.scrcpyClient !== scrcpyClient) {
+        return;
+      }
+
+      this.screenPowerOffPending = false;
+      void controller.setScreenPowerMode(AndroidScreenPowerMode.Off)
+        .then(() => {
+          this.output.appendLine("device screen turned off after first video frame");
+        })
+        .catch((error) => {
+          this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
+        });
+    }, 1500);
   }
 
   private handleScrcpyLogLine(line: string): void {
