@@ -34,10 +34,13 @@ const settingsPage = document.querySelector<HTMLElement>("#settingsPage")!;
 const fpsInput = document.querySelector<HTMLInputElement>("#fpsInput")!;
 const sizeInput = document.querySelector<HTMLInputElement>("#sizeInput")!;
 const bitrateInput = document.querySelector<HTMLInputElement>("#bitrateInput")!;
+const videoBufferInput = document.querySelector<HTMLInputElement>("#videoBufferInput")!;
 const codecInput = document.querySelector<HTMLSelectElement>("#codecInput")!;
 const rootModeInput = document.querySelector<HTMLSelectElement>("#rootModeInput")!;
 const screenOffInput = document.querySelector<HTMLInputElement>("#screenOffInput")!;
 const keepAwakeInput = document.querySelector<HTMLInputElement>("#keepAwakeInput")!;
+const powerOnInput = document.querySelector<HTMLInputElement>("#powerOnInput")!;
+const powerOffOnCloseInput = document.querySelector<HTMLInputElement>("#powerOffOnCloseInput")!;
 const audioEnabledInput = document.querySelector<HTMLInputElement>("#audioEnabledInput")!;
 const audioCodecInput = document.querySelector<HTMLSelectElement>("#audioCodecInput")!;
 
@@ -55,6 +58,9 @@ let videoAspectRatio = 9 / 16;
 let firstFrameNotified = false;
 let decodedPacketCount = 0;
 let currentStatus = "idle";
+let videoBufferMs = 50;
+let firstQueuedPacketAt = 0;
+let bufferTimer: number | undefined;
 
 const specialKeyboardMap: Record<string, string> = {
   Enter: "Enter",
@@ -90,10 +96,14 @@ function setConfigInputs(config: StreamStartPayload["config"]): void {
   fpsInput.value = String(config.maxFps);
   sizeInput.value = String(config.maxSize);
   bitrateInput.value = String(config.videoBitRate);
+  videoBufferInput.value = String(config.videoBufferMs);
+  videoBufferMs = config.videoBufferMs;
   codecInput.value = config.videoCodec;
-  rootModeInput.value = config.rootMode ?? "always";
+  rootModeInput.value = config.rootMode ?? "auto";
   screenOffInput.checked = config.screenOffOnStart ?? true;
   keepAwakeInput.checked = config.keepScreenAwake ?? true;
+  powerOnInput.checked = config.powerOnOnStart ?? false;
+  powerOffOnCloseInput.checked = config.powerOffOnClose ?? false;
   audioEnabledInput.checked = config.audioEnabled ?? false;
   audioCodecInput.value = config.audioCodec ?? "aac";
 }
@@ -153,6 +163,11 @@ function disposeDecoder(): void {
   packetQueue.length = 0;
   decodeLoopRunning = false;
   droppedPackets = 0;
+  firstQueuedPacketAt = 0;
+  if (bufferTimer !== undefined) {
+    window.clearTimeout(bufferTimer);
+    bufferTimer = undefined;
+  }
   firstFrameNotified = false;
   decodedPacketCount = 0;
 }
@@ -287,6 +302,10 @@ function enqueueVideo(packet: VideoPacketPayload): void {
     return;
   }
 
+  if (packetQueue.length === 0) {
+    firstQueuedPacketAt = performance.now();
+  }
+
   if (packetQueue.length >= maxQueuedPackets) {
     if (packet.type === "data" && !packet.keyframe) {
       droppedPackets += 1;
@@ -304,6 +323,16 @@ function enqueueVideo(packet: VideoPacketPayload): void {
   }
 
   packetQueue.push(packet);
+  const bufferedFor = performance.now() - firstQueuedPacketAt;
+  if (videoBufferMs > 0 && bufferedFor < videoBufferMs) {
+    if (bufferTimer === undefined) {
+      bufferTimer = window.setTimeout(() => {
+        bufferTimer = undefined;
+        void pumpDecoder();
+      }, Math.max(0, videoBufferMs - bufferedFor));
+    }
+    return;
+  }
   void pumpDecoder();
 }
 
@@ -476,7 +505,8 @@ document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click"
   const maxFps = readNumberInput(fpsInput, 0);
   const maxSize = readNumberInput(sizeInput, 0);
   const videoBitRate = readNumberInput(bitrateInput, 1000000);
-  if (maxFps === undefined || maxSize === undefined || videoBitRate === undefined) {
+  const nextVideoBufferMs = readNumberInput(videoBufferInput, 0);
+  if (maxFps === undefined || maxSize === undefined || videoBitRate === undefined || nextVideoBufferMs === undefined) {
     setStatus("参数无效", "请检查播放设置里的数字输入");
     return;
   }
@@ -487,10 +517,13 @@ document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click"
       maxFps,
       maxSize,
       videoBitRate,
+      videoBufferMs: nextVideoBufferMs,
       videoCodec: codecInput.value as "h264" | "h265" | "av1",
       rootMode: rootModeInput.value as "auto" | "always" | "never",
       screenOffOnStart: screenOffInput.checked,
       keepScreenAwake: keepAwakeInput.checked,
+      powerOnOnStart: powerOnInput.checked,
+      powerOffOnClose: powerOffOnCloseInput.checked,
       audioEnabled: audioEnabledInput.checked,
       audioCodec: audioCodecInput.value as "opus" | "aac",
     },

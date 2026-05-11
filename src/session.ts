@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as path from "node:path";
 import { Readable } from "node:stream";
 import * as vscode from "vscode";
@@ -17,7 +17,6 @@ import {
   AndroidKeyEventMeta,
   AndroidMotionEventAction,
   AndroidMotionEventButton,
-  AndroidScreenPowerMode,
   DefaultServerPath,
   ScrcpyInstanceId,
   ScrcpyPointerId,
@@ -83,10 +82,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private lastScrcpyLogs: string[] = [];
   private connectInFlight = false;
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root" };
-  private screenPowerOffPending = false;
   private codecFallbackScheduled = false;
-  private previousScreenTimeout?: string;
-  private screenTimeoutWatchdog?: ChildProcess;
   private webviewMessageQueue: ExtensionToWebviewMessage[] = [];
   private webviewMessageDrainRunning = false;
   private queuedVideoMessages = 0;
@@ -111,8 +107,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       maxSize: config.maxSize,
       videoBitRate: config.videoBitRate,
       videoCodec: config.videoCodec,
+      videoBufferMs: config.videoBufferMs,
       screenOffOnStart: config.screenOffOnStart,
       keepScreenAwake: config.keepScreenAwake,
+      powerOnOnStart: config.powerOnOnStart,
+      powerOffOnClose: config.powerOffOnClose,
       audioEnabled: config.audioEnabled,
       audioCodec: config.audioCodec,
     };
@@ -159,9 +158,12 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         this.config.maxSize !== nextConfig.maxSize ||
         this.config.videoBitRate !== nextConfig.videoBitRate ||
         this.config.videoCodec !== nextConfig.videoCodec ||
+        this.config.videoBufferMs !== nextConfig.videoBufferMs ||
         this.config.rootMode !== nextConfig.rootMode ||
         this.config.screenOffOnStart !== nextConfig.screenOffOnStart ||
         this.config.keepScreenAwake !== nextConfig.keepScreenAwake ||
+        this.config.powerOnOnStart !== nextConfig.powerOnOnStart ||
+        this.config.powerOffOnClose !== nextConfig.powerOffOnClose ||
         this.config.audioEnabled !== nextConfig.audioEnabled ||
         this.config.audioCodec !== nextConfig.audioCodec
       );
@@ -173,8 +175,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       maxSize: nextConfig.maxSize,
       videoBitRate: nextConfig.videoBitRate,
       videoCodec: nextConfig.videoCodec,
+      videoBufferMs: nextConfig.videoBufferMs,
       screenOffOnStart: nextConfig.screenOffOnStart,
       keepScreenAwake: nextConfig.keepScreenAwake,
+      powerOnOnStart: nextConfig.powerOnOnStart,
+      powerOffOnClose: nextConfig.powerOffOnClose,
       audioEnabled: nextConfig.audioEnabled,
       audioCodec: nextConfig.audioCodec,
       rootMode: nextConfig.rootMode,
@@ -208,7 +213,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         await this.reconnect();
         return;
       case "video-ready":
-        await this.applyPendingScreenPowerOff();
         return;
       case "decoder-error":
         await this.handleDecoderError(message.detail);
@@ -488,7 +492,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         height: videoStream.height || metadataHeight,
       };
       this.videoPacketsSent = 0;
-      this.screenPowerOffPending = !!this.currentStreamConfig.screenOffOnStart;
 
       const startPayload: StreamStartPayload = {
         serial,
@@ -509,7 +512,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         detail: `${name} · ${serial}`,
         mode: controlMode,
       });
-      await this.enableKeepAwakeIfNeeded(adb, serial);
 
       videoStream.sizeChanged(({ width, height }) => {
         this.streamSize = { width, height };
@@ -540,10 +542,18 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
       scrcpyClient.exited
         .then(() => {
+          if (this.scrcpyClient !== scrcpyClient) {
+            return;
+          }
           const tail = this.lastScrcpyLogs.at(-1);
           return this.handleDisconnect(tail ? `scrcpy exited · ${tail}` : "scrcpy exited");
         })
-        .catch((error) => this.handleDisconnect(String(error)));
+        .catch((error) => {
+          if (this.scrcpyClient !== scrcpyClient) {
+            return;
+          }
+          return this.handleDisconnect(String(error));
+        });
     } catch (error) {
       this.output.appendLine(`connect failed: ${String(error)}`);
       if (error && typeof error === "object" && "output" in error) {
@@ -565,7 +575,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   }
 
   private async stop(detail?: string): Promise<void> {
-    await this.restoreScreenTimeout();
     if (this.scrcpyClient) {
       try {
         await this.scrcpyClient.close();
@@ -577,7 +586,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
     this.scrcpyAbort.abort();
     this.scrcpyAbort = new AbortController();
-    this.screenPowerOffPending = false;
 
     if (this.videoLoop) {
       try {
@@ -957,25 +965,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
   }
 
-  private async applyPendingScreenPowerOff(): Promise<void> {
-    if (!this.screenPowerOffPending) {
-      return;
-    }
-
-    const controller = this.scrcpyClient?.controller;
-    if (!controller) {
-      return;
-    }
-
-    this.screenPowerOffPending = false;
-    try {
-      await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
-      this.output.appendLine("device screen turned off after first video frame");
-    } catch (error) {
-      this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
-    }
-  }
-
   private async pushServerToDevice(adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>, serial: string): Promise<string> {
     const localServerBin = path.join(this.context.extensionPath, "media", "scrcpy-server.bin");
     await fs.access(localServerBin);
@@ -1011,129 +1000,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       ]);
     }
     return await adb.subprocess.noneProtocol.spawnWaitText(command);
-  }
-
-  private async readScreenTimeout(adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>): Promise<string | undefined> {
-    try {
-      const result = (await this.runDeviceCommand(adb, ["settings", "get", "system", "screen_off_timeout"])).trim();
-      return result || undefined;
-    } catch (error) {
-      this.output.appendLine(`read screen_off_timeout failed: ${String(error)}`);
-      return undefined;
-    }
-  }
-
-  private async writeScreenTimeout(
-    adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
-    value: string,
-  ): Promise<void> {
-    const preferRoot = this.activeControlMode === "root" || this.currentRootMode === "always";
-    try {
-      await this.runDeviceCommand(adb, ["settings", "put", "system", "screen_off_timeout", value], preferRoot);
-    } catch (error) {
-      this.output.appendLine(`set screen_off_timeout failed: ${String(error)}`);
-      throw error;
-    }
-  }
-
-  private async deleteScreenTimeout(adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>): Promise<void> {
-    const preferRoot = this.activeControlMode === "root" || this.currentRootMode === "always";
-    try {
-      await this.runDeviceCommand(adb, ["settings", "delete", "system", "screen_off_timeout"], preferRoot);
-    } catch (error) {
-      this.output.appendLine(`delete screen_off_timeout failed: ${String(error)}`);
-      throw error;
-    }
-  }
-
-  private stopScreenTimeoutWatchdog(): void {
-    if (!this.screenTimeoutWatchdog) {
-      return;
-    }
-    try {
-      process.kill(this.screenTimeoutWatchdog.pid ?? -1, "SIGTERM");
-    } catch {
-      // ignore
-    }
-    this.screenTimeoutWatchdog = undefined;
-  }
-
-  private startScreenTimeoutWatchdog(serial: string, previousValue: string): void {
-    this.stopScreenTimeoutWatchdog();
-    const quotedHost = JSON.stringify(this.config.adbHost);
-    const quotedSerial = JSON.stringify(serial);
-    const quotedPrevious = JSON.stringify(previousValue);
-    const restoreArgs =
-      previousValue === "null"
-        ? `["-H", ${quotedHost}, "-P", ${this.config.adbPort}, "-s", ${quotedSerial}, "shell", "settings", "delete", "system", "screen_off_timeout"]`
-        : `["-H", ${quotedHost}, "-P", ${this.config.adbPort}, "-s", ${quotedSerial}, "shell", "settings", "put", "system", "screen_off_timeout", ${quotedPrevious}]`;
-    const script = `
-const { execFileSync } = require("node:child_process");
-const parentPid = ${process.pid};
-while (true) {
-  try {
-    process.kill(parentPid, 0);
-  } catch {
-    try {
-      execFileSync("adb", ${restoreArgs}, { stdio: "ignore" });
-    } catch {}
-    process.exit(0);
-  }
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
-}
-`;
-    try {
-      this.screenTimeoutWatchdog = spawn(process.execPath, ["-e", script], {
-        detached: true,
-        stdio: "ignore",
-      });
-      this.screenTimeoutWatchdog.unref();
-    } catch (error) {
-      this.output.appendLine(`start screen timeout watchdog failed: ${String(error)}`);
-    }
-  }
-
-  private async enableKeepAwakeIfNeeded(
-    adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
-    serial: string,
-  ): Promise<void> {
-    if (!this.currentStreamConfig.keepScreenAwake) {
-      this.stopScreenTimeoutWatchdog();
-      this.previousScreenTimeout = undefined;
-      return;
-    }
-
-    const currentTimeout = await this.readScreenTimeout(adb);
-    this.previousScreenTimeout = currentTimeout ?? "null";
-    try {
-      await this.writeScreenTimeout(adb, "2147483647");
-      this.output.appendLine(`screen_off_timeout set to keep-awake value for ${serial}`);
-      this.startScreenTimeoutWatchdog(serial, this.previousScreenTimeout);
-    } catch {
-      // already logged
-    }
-  }
-
-  private async restoreScreenTimeout(): Promise<void> {
-    this.stopScreenTimeoutWatchdog();
-    if (!this.currentSerial || this.previousScreenTimeout === undefined) {
-      this.previousScreenTimeout = undefined;
-      return;
-    }
-
-    try {
-      const adb = await this.client.createAdb({ serial: this.currentSerial });
-      if (this.previousScreenTimeout === "null") {
-        await this.deleteScreenTimeout(adb);
-      } else {
-        await this.writeScreenTimeout(adb, this.previousScreenTimeout);
-      }
-      this.output.appendLine(`screen_off_timeout restored for ${this.currentSerial}`);
-    } catch (error) {
-      this.output.appendLine(`restore screen_off_timeout failed: ${String(error)}`);
-    } finally {
-      this.previousScreenTimeout = undefined;
-    }
   }
 
   private handleScrcpyLogLine(line: string): void {
@@ -1258,6 +1124,10 @@ while (true) {
       audioCodec: this.currentStreamConfig.audioCodec ?? "aac",
       control: true,
       cleanup: true,
+      powerOn: !!this.currentStreamConfig.powerOnOnStart,
+      powerOffOnClose: !!this.currentStreamConfig.powerOffOnClose,
+      screenOffTimeout: this.currentStreamConfig.screenOffOnStart ? 0 : undefined,
+      stayAwake: !!this.currentStreamConfig.keepScreenAwake,
       maxFps: this.currentStreamConfig.maxFps,
       maxSize: this.currentStreamConfig.maxSize,
       videoBitRate: this.currentStreamConfig.videoBitRate,

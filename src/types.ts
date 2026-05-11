@@ -5,11 +5,14 @@ export interface ExtensionConfig {
   maxSize: number;
   videoBitRate: number;
   videoCodec: "h264" | "h265" | "av1";
+  videoBufferMs: number;
   autoReconnectDelayMs: number;
   scrcpyServerVersion: string;
   rootMode: "auto" | "always" | "never";
   screenOffOnStart: boolean;
   keepScreenAwake: boolean;
+  powerOnOnStart: boolean;
+  powerOffOnClose: boolean;
   audioEnabled: boolean;
   audioCodec: "opus" | "aac";
 }
@@ -26,9 +29,12 @@ export interface StreamConfig {
   maxSize: number;
   videoBitRate: number;
   videoCodec: "h264" | "h265" | "av1";
+  videoBufferMs: number;
   rootMode?: "auto" | "always" | "never";
   screenOffOnStart?: boolean;
   keepScreenAwake?: boolean;
+  powerOnOnStart?: boolean;
+  powerOffOnClose?: boolean;
   audioEnabled?: boolean;
   audioCodec?: "opus" | "aac";
 }

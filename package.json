@@ -114,6 +114,12 @@
           "default": "h264",
           "description": "Preferred video codec."
         },
+        "scrcpySidebar.videoBufferMs": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "description": "Client-side video buffer in milliseconds before decoding. 0 minimizes latency; higher values smooth unstable transport."
+        },
         "scrcpySidebar.autoReconnectDelayMs": {
           "type": "number",
           "default": 3000,
@@ -127,8 +133,8 @@
             "always",
             "never"
           ],
-          "default": "always",
-          "description": "How scrcpy server should use su/root when available."
+          "default": "auto",
+          "description": "How scrcpy server should use su/root. auto starts without root and falls back to root only when input injection is denied."
         },
         "scrcpySidebar.screenOffOnStart": {
           "type": "boolean",
@@ -138,7 +144,17 @@
         "scrcpySidebar.keepScreenAwake": {
           "type": "boolean",
           "default": true,
-          "description": "Temporarily set screen timeout to a very large value while connected, then restore it on disconnect."
+          "description": "Ask scrcpy server to keep the device awake while connected."
+        },
+        "scrcpySidebar.powerOnOnStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask scrcpy server to power on the device screen when starting."
+        },
+        "scrcpySidebar.powerOffOnClose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask scrcpy server to power off the device screen when closing."
         },
         "scrcpySidebar.audioEnabled": {
           "type": "boolean",

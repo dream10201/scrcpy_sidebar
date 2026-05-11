@@ -12,11 +12,14 @@ function getConfig(): ExtensionConfig {
     maxSize: config.get("maxSize", 1280),
     videoBitRate: config.get("videoBitRate", 3000000),
     videoCodec: config.get("videoCodec", "h264"),
+    videoBufferMs: config.get("videoBufferMs", 50),
     autoReconnectDelayMs: config.get("autoReconnectDelayMs", 3000),
     scrcpyServerVersion: config.get("scrcpyServerVersion", "3.3.4"),
-    rootMode: config.get("rootMode", "always"),
+    rootMode: config.get("rootMode", "auto"),
     screenOffOnStart: config.get("screenOffOnStart", true),
     keepScreenAwake: config.get("keepScreenAwake", true),
+    powerOnOnStart: config.get("powerOnOnStart", false),
+    powerOffOnClose: config.get("powerOffOnClose", false),
     audioEnabled: config.get("audioEnabled", false),
     audioCodec: config.get("audioCodec", "aac"),
   };
@@ -209,6 +212,9 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
               <label>码率
                 <input id="bitrateInput" type="number" min="1000000" step="500000" value="3000000" />
               </label>
+              <label>缓冲(ms)
+                <input id="videoBufferInput" type="number" min="0" step="10" value="50" />
+              </label>
               <label>编码
                 <select id="codecInput">
                   <option value="h264">H.264</option>
@@ -218,8 +224,8 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
               </label>
               <label>控制权限
                 <select id="rootModeInput">
-                  <option value="always">默认使用 SU</option>
                   <option value="auto">自动切换</option>
+                  <option value="always">总是使用 SU</option>
                   <option value="never">不使用 SU</option>
                 </select>
               </label>
@@ -230,6 +236,14 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
               <label class="checkbox-row">
                 <input id="keepAwakeInput" type="checkbox" />
                 <span>连接期间保持常亮</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="powerOnInput" type="checkbox" />
+                <span>启动时点亮屏幕</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="powerOffOnCloseInput" type="checkbox" />
+                <span>断开后熄屏</span>
               </label>
               <label class="checkbox-row">
                 <input id="audioEnabledInput" type="checkbox" />

@@ -90,19 +90,24 @@ npx @vscode/vsce package
 - `scrcpySidebar.maxSize`
 - `scrcpySidebar.videoBitRate`
 - `scrcpySidebar.videoCodec`
+- `scrcpySidebar.videoBufferMs`
 - `scrcpySidebar.rootMode`
 - `scrcpySidebar.screenOffOnStart`
 - `scrcpySidebar.keepScreenAwake`
+- `scrcpySidebar.powerOnOnStart`
+- `scrcpySidebar.powerOffOnClose`
 - `scrcpySidebar.audioEnabled`
 - `scrcpySidebar.audioCodec`
 
 当前默认策略：
 
 - 默认使用 `H.264`
-- 默认使用 `su`
+- 默认先使用标准 scrcpy 控制，仅在标准输入注入被拒时自动切换 `su`
+- 默认客户端视频缓冲为 `50ms`
 - 默认开启“连接期间保持常亮”
-- 默认在视频首帧渲染后熄灭设备屏幕
-- `scrcpySidebar.keepScreenAwake` 会临时修改设备 `screen_off_timeout`，断开连接时会尝试恢复原值
+- 默认请求 scrcpy server 启动后熄灭设备屏幕
+- 默认启动时不主动点亮屏幕，断开后也不主动熄屏
+- `scrcpySidebar.keepScreenAwake` 现在优先使用 scrcpy server 的 `stayAwake` 能力
 - 运行时修改播放参数会同步到侧边栏；修改 ADB Host、ADB Port 或 scrcpy-server 版本会重建会话
 
 ## GitHub Actions
