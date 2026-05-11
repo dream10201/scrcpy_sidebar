@@ -56,10 +56,13 @@ export interface VideoPacketPayload {
   pts?: string;
 }
 
+export type DeviceScreenState = "on" | "off" | "unknown";
+
 export type ExtensionToWebviewMessage =
   | { type: "state"; status: string; detail?: string; mode?: "standard" | "root" | "pending" | "view-only" }
   | { type: "config"; config: StreamConfig }
   | { type: "devices"; devices: DeviceSummary[]; currentSerial?: string }
+  | { type: "device-screen"; state: DeviceScreenState }
   | { type: "stream-start"; payload: StreamStartPayload }
   | { type: "stream-stop"; detail?: string }
   | { type: "video"; packet: VideoPacketPayload }

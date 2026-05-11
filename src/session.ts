@@ -59,6 +59,8 @@ function shellEscape(argument: string): string {
   return `'${argument.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+const KeepAwakeScreenOffTimeoutMs = 24 * 60 * 60 * 1000;
+
 export class ScrcpySidebarSession implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly client: AdbServerClient;
@@ -85,6 +87,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root" };
   private screenPowerOffPending = false;
   private screenPowerOffTimer?: NodeJS.Timeout;
+  private reconnectingInternally = false;
   private codecFallbackScheduled = false;
   private webviewMessageQueue: ExtensionToWebviewMessage[] = [];
   private webviewMessageDrainRunning = false;
@@ -122,11 +125,38 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   }
 
   async initialize(): Promise<void> {
+    await this.syncConfigToWebview();
+    await this.syncDeviceScreenState("unknown");
+    await this.refreshDevices();
+  }
+
+  private async syncConfigToWebview(): Promise<void> {
     await this.post({
       type: "config",
       config: this.currentStreamConfig,
     });
-    await this.refreshDevices();
+  }
+
+  private async syncDeviceScreenState(state: "on" | "off" | "unknown"): Promise<void> {
+    await this.post({
+      type: "device-screen",
+      state,
+    });
+  }
+
+  private async syncCurrentDeviceScreenState(
+    adb?: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
+  ): Promise<"on" | "off" | "unknown"> {
+    const serial = this.currentSerial;
+    if (!adb && !serial) {
+      await this.syncDeviceScreenState("unknown");
+      return "unknown";
+    }
+
+    const currentAdb = adb ?? await this.client.createAdb({ serial: serial! });
+    const state = await this.getDisplayPowerState(currentAdb);
+    await this.syncDeviceScreenState(state);
+    return state;
   }
 
   dispose(): void {
@@ -188,10 +218,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       rootMode: nextConfig.rootMode,
     };
     this.currentRootMode = nextConfig.rootMode;
-    void this.post({
-      type: "config",
-      config: this.currentStreamConfig,
-    });
+    void this.syncConfigToWebview();
     if (shouldReconnect) {
       await this.reconnect();
     }
@@ -202,6 +229,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     switch (message.type) {
       case "ready":
+        await this.syncConfigToWebview();
+        await this.syncDeviceScreenState("unknown");
         await this.refreshDevices();
         return;
       case "select-device":
@@ -280,8 +309,13 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
     const serial = this.currentSerial;
     const name = this.currentDeviceName || serial;
-    await this.stop("Reconnecting");
-    await this.connect(serial, name, this.forcedControlMode);
+    this.reconnectingInternally = true;
+    try {
+      await this.stop("Reconnecting");
+      await this.connect(serial, name, this.forcedControlMode);
+    } finally {
+      this.reconnectingInternally = false;
+    }
   }
 
   private async getDevices(): Promise<DeviceSummary[]> {
@@ -481,6 +515,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         }
       })();
       const videoStream = await scrcpyClient.videoStream;
+      await this.syncCurrentDeviceScreenState(adb);
       const metadataWidth = videoStream.metadata.width ?? 0;
       const metadataHeight = videoStream.metadata.height ?? 0;
       this.streamSize = {
@@ -523,6 +558,9 @@ export class ScrcpySidebarSession implements vscode.Disposable {
               break;
             }
             const data = value.data;
+            if (value.type === "data" && this.videoPacketsSent === 0) {
+              this.output.appendLine("first video packet received");
+            }
             const packet: VideoPacketPayload = {
               type: value.type,
               data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
@@ -536,6 +574,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
           reader.releaseLock();
         }
       })();
+      void this.requestDeviceScreenOffViaController("stream setup complete");
 
       scrcpyClient.exited
         .then(() => {
@@ -601,6 +640,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     if (detail) {
       await this.post({ type: "stream-stop", detail });
       await this.post({ type: "state", status: "idle", detail, mode: "pending" });
+      await this.syncDeviceScreenState("unknown");
     }
   }
 
@@ -608,6 +648,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.output.appendLine(`stream disconnected: ${detail}; packetsSent=${this.videoPacketsSent}`);
     await this.post({ type: "stream-stop", detail });
     await this.post({ type: "state", status: "disconnected", detail, mode: this.activeControlMode });
+    await this.syncDeviceScreenState("unknown");
     if (!this.manuallyDisconnected && !this.rootUpgradeScheduled) {
       await this.scheduleReconnect();
     }
@@ -1032,14 +1073,16 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
 
     const displayState = await this.getDisplayPowerState(adb);
-    if (displayState !== "off") {
+    if (displayState !== "off" && !this.reconnectingInternally) {
       return;
     }
 
-    this.output.appendLine("display is already off before connect; waking device briefly so capture can start");
+    // Some ROMs return a black capture if scrcpy starts while the physical screen is already off.
+    // Wake the device briefly, then let the post-first-frame power-off path turn it back off.
+    this.output.appendLine("waking device briefly so capture can start");
     try {
       await this.runDeviceCommand(adb, ["input", "keyevent", "KEYCODE_WAKEUP"]);
-      await sleep(500);
+      await sleep(this.reconnectingInternally ? 1200 : 500);
     } catch (error) {
       this.output.appendLine(`temporary wake failed: ${String(error)}`);
     }
@@ -1047,6 +1090,14 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
   private async applyPendingScreenPowerOff(): Promise<void> {
     if (!this.screenPowerOffPending) {
+      return;
+    }
+
+    await this.requestDeviceScreenOffViaController("webview video ready");
+  }
+
+  private async requestDeviceScreenOffViaController(reason: string): Promise<void> {
+    if (!this.currentStreamConfig.screenOffOnStart || !this.screenPowerOffPending) {
       return;
     }
 
@@ -1060,7 +1111,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       return;
     }
 
-    this.output.appendLine("scheduling screen power off shortly after first video frame");
+    this.output.appendLine(`requesting display power off via scrcpy controller (${reason})`);
     this.screenPowerOffTimer = setTimeout(() => {
       this.screenPowerOffTimer = undefined;
       if (!this.screenPowerOffPending || this.scrcpyClient !== scrcpyClient) {
@@ -1069,16 +1120,24 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
       this.screenPowerOffPending = false;
       void controller.setScreenPowerMode(AndroidScreenPowerMode.Off)
-        .then(() => {
-          this.output.appendLine("device screen turned off after first video frame");
+        .then(async () => {
+          this.output.appendLine("screen off command sent via scrcpy controller");
+          await this.syncDeviceScreenState("off");
         })
         .catch((error) => {
           this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
+          void this.syncDeviceScreenState("unknown");
         });
-    }, 1500);
+    }, 0);
   }
 
   private handleScrcpyLogLine(line: string): void {
+    if (line.includes("Device display turned off")) {
+      void this.syncDeviceScreenState("off");
+    } else if (line.includes("Device display turned on")) {
+      void this.syncDeviceScreenState("on");
+    }
+
     if (
       this.activeControlMode === "standard" &&
       this.currentRootMode === "auto" &&
@@ -1201,8 +1260,9 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       control: true,
       cleanup: true,
       powerOn: !!this.currentStreamConfig.powerOnOnStart,
-      powerOffOnClose: !!this.currentStreamConfig.powerOffOnClose,
+      powerOffOnClose: !!this.currentStreamConfig.powerOffOnClose && !this.reconnectingInternally,
       stayAwake: !!this.currentStreamConfig.keepScreenAwake,
+      screenOffTimeout: this.currentStreamConfig.keepScreenAwake ? KeepAwakeScreenOffTimeoutMs : undefined,
       maxFps: this.currentStreamConfig.maxFps,
       maxSize: this.currentStreamConfig.maxSize,
       videoBitRate: this.currentStreamConfig.videoBitRate,

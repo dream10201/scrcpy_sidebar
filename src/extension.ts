@@ -18,7 +18,7 @@ function getConfig(): ExtensionConfig {
     rootMode: config.get("rootMode", "auto"),
     screenOffOnStart: config.get("screenOffOnStart", true),
     keepScreenAwake: config.get("keepScreenAwake", true),
-    powerOnOnStart: config.get("powerOnOnStart", false),
+    powerOnOnStart: false,
     powerOffOnClose: config.get("powerOffOnClose", true),
     audioEnabled: config.get("audioEnabled", false),
     audioCodec: config.get("audioCodec", "aac"),
@@ -40,6 +40,23 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
+  }
+
+  async migrateLegacySettings(): Promise<void> {
+    const config = vscode.workspace.getConfiguration("scrcpySidebar");
+    const legacyValue = config.inspect<boolean>("powerOnOnStart");
+    if (
+      legacyValue?.globalValue === undefined &&
+      legacyValue?.workspaceValue === undefined &&
+      legacyValue?.workspaceFolderValue === undefined
+    ) {
+      return;
+    }
+
+    this.output.appendLine("removing legacy scrcpySidebar.powerOnOnStart setting");
+    await config.update("powerOnOnStart", undefined, vscode.ConfigurationTarget.Global);
+    await config.update("powerOnOnStart", undefined, vscode.ConfigurationTarget.Workspace);
+    await config.update("powerOnOnStart", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
   }
 
   async resolveWebviewView(view: vscode.WebviewView): Promise<void> {
@@ -153,8 +170,9 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
                 <span id="deviceSub">Waiting for adb devices</span>
               </div>
               <div class="header-actions">
-                <span class="badge" id="statusBadge">Idle</span>
-                <span class="badge mode" id="modeBadge">Pending</span>
+                <span class="badge icon-badge status" id="statusBadge" aria-label="空闲" title="空闲">○</span>
+                <span class="badge icon-badge mode" id="modeBadge" aria-label="控制模式待定" title="控制模式待定">…</span>
+                <span class="badge icon-badge screen" id="screenStateBadge" aria-label="真机屏幕状态未知" title="真机屏幕状态未知">?</span>
                 <button id="connectBtn" class="icon-button subtle" aria-label="连接设备" title="连接设备">
                   ${icon("connect")}
                 </button>
@@ -162,9 +180,6 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
                   ${icon("settings")}
                 </button>
               </div>
-            </div>
-            <div class="screen-frame">
-              <div class="screen-notch"></div>
             </div>
             <div class="screen-stage">
               <canvas id="screen" tabindex="0"></canvas>
@@ -196,7 +211,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
               ${icon("back")}
             </button>
             <div class="settings-heading">
-              <strong>播放设置</strong>
+              <strong>连接行为</strong>
               <span class="mini" id="detail">Ready</span>
             </div>
           </div>
@@ -229,33 +244,29 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
                   <option value="never">不使用 SU</option>
                 </select>
               </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-grid compact">
               <label class="checkbox-row">
-                <input id="screenOffInput" type="checkbox" />
-                <span>启动后熄屏</span>
+                <input id="screenOffInput" type="checkbox" checked />
+                <span>连接后真机黑屏</span>
               </label>
               <label class="checkbox-row">
-                <input id="keepAwakeInput" type="checkbox" />
-                <span>连接期间保持常亮</span>
+                <input id="keepAwakeInput" type="checkbox" checked />
+                <span>连接时阻止真机休眠</span>
               </label>
               <label class="checkbox-row">
-                <input id="powerOnInput" type="checkbox" />
-                <span>启动时点亮屏幕</span>
-              </label>
-              <label class="checkbox-row">
-                <input id="powerOffOnCloseInput" type="checkbox" />
-                <span>断开后熄屏</span>
+                <input id="powerOffOnCloseInput" type="checkbox" checked />
+                <span>断开后真机熄屏</span>
               </label>
               <label class="checkbox-row">
                 <input id="audioEnabledInput" type="checkbox" />
-                <span>启用音频（实验性）</span>
-              </label>
-              <label>音频编码
-                <select id="audioCodecInput">
-                  <option value="aac">AAC</option>
-                  <option value="opus">Opus</option>
-                </select>
+                <span>启用真机音频</span>
               </label>
             </div>
+            <p class="hint-block">更多性能、编码和权限参数请在 VS Code / code-server 设置中搜索 <code>scrcpySidebar</code>。</p>
           </div>
 
           <div class="settings-section utility-actions">
@@ -265,7 +276,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
           <div class="settings-footer">
             <span id="metrics">FPS: 0</span>
-            <span class="mini">修改参数会自动重连视频流</span>
+            <span class="mini">应用后会保存到用户设置，连接中修改将自动重连视频流</span>
           </div>
         </div>
       </section>
@@ -279,6 +290,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Scrcpy Sidebar");
   const provider = new SidebarProvider(context, output);
+  void provider.migrateLegacySettings();
 
   context.subscriptions.push(
     output,

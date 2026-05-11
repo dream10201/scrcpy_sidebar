@@ -14,7 +14,7 @@
 - 支持 `su` / root 控制模式
 - 支持连接期间保持常亮，并在断开后恢复锁屏超时
 - 支持右键映射为返回键
-- 可配置 FPS、分辨率上限、码率、编码格式、熄屏启动等参数
+- 侧边栏只保留 4 个高频开关，其余高级参数走 VS Code 原生设置
 
 ## 适用场景
 
@@ -105,11 +105,20 @@ npx @vscode/vsce package
 - 默认使用更偏性能的投屏参数：`15 FPS`、`960` 最大尺寸、`2 Mbps` 码率
 - 默认先使用标准 scrcpy 控制，仅在标准输入注入被拒时自动切换 `su`
 - 默认客户端视频缓冲为 `50ms`
-- 默认开启“连接期间保持常亮”
-- 默认请求 scrcpy server 启动后熄灭设备屏幕
+- 默认开启“连接时阻止真机休眠”：同时使用 scrcpy 的 `stay_awake=true` 和临时 `screen_off_timeout=24h`，退出时由 scrcpy server 恢复原值
+- 默认请求视频稳定后熄灭真机屏幕
 - 默认启动时不主动点亮屏幕，断开后主动熄屏
 - `scrcpySidebar.keepScreenAwake` 现在优先使用 scrcpy server 的 `stayAwake` 能力
 - 运行时修改播放参数会同步到侧边栏；修改 ADB Host、ADB Port 或 scrcpy-server 版本会重建会话
+
+侧边栏设置页当前只暴露 4 个常用开关：
+
+- `连接后真机黑屏`
+- `连接时阻止真机休眠`
+- `断开后真机熄屏`
+- `启用真机音频`
+
+其余性能、编码和 root 策略参数继续保留在 VS Code / code-server 原生设置里，搜索 `scrcpySidebar` 即可。
 
 ## GitHub Actions
 

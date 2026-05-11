@@ -25,6 +25,7 @@ const metrics = document.querySelector<HTMLSpanElement>("#metrics")!;
 const detail = document.querySelector<HTMLSpanElement>("#detail")!;
 const statusBadge = document.querySelector<HTMLSpanElement>("#statusBadge")!;
 const modeBadge = document.querySelector<HTMLSpanElement>("#modeBadge")!;
+const screenStateBadge = document.querySelector<HTMLSpanElement>("#screenStateBadge")!;
 const connectBtn = document.querySelector<HTMLButtonElement>("#connectBtn")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 const screenStage = document.querySelector<HTMLDivElement>(".screen-stage")!;
@@ -39,10 +40,8 @@ const codecInput = document.querySelector<HTMLSelectElement>("#codecInput")!;
 const rootModeInput = document.querySelector<HTMLSelectElement>("#rootModeInput")!;
 const screenOffInput = document.querySelector<HTMLInputElement>("#screenOffInput")!;
 const keepAwakeInput = document.querySelector<HTMLInputElement>("#keepAwakeInput")!;
-const powerOnInput = document.querySelector<HTMLInputElement>("#powerOnInput")!;
 const powerOffOnCloseInput = document.querySelector<HTMLInputElement>("#powerOffOnCloseInput")!;
 const audioEnabledInput = document.querySelector<HTMLInputElement>("#audioEnabledInput")!;
-const audioCodecInput = document.querySelector<HTMLSelectElement>("#audioCodecInput")!;
 
 let decoder: WebCodecsVideoDecoder | undefined;
 let currentStream: StreamStartPayload | undefined;
@@ -88,7 +87,16 @@ function setStatus(text: string, extra?: string): void {
   currentStatus = text;
   statusText.textContent = text;
   detail.textContent = extra ?? "";
-  statusBadge.textContent = text;
+  const meta =
+    text === "正在投屏" || text === "streaming" ? { icon: "●", label: "正在投屏", state: "streaming" } :
+    text === "connecting" || text === "reconnecting" || text === "elevating" ? { icon: "↻", label: text, state: "active" } :
+    text === "连接已断开" || text === "disconnected" ? { icon: "○", label: "连接已断开", state: "idle" } :
+    text === "错误" || text === "解码失败" ? { icon: "!", label: text, state: "error" } :
+    { icon: "○", label: text || "空闲", state: "idle" };
+  statusBadge.textContent = meta.icon;
+  statusBadge.dataset.state = meta.state;
+  statusBadge.title = meta.label;
+  statusBadge.setAttribute("aria-label", meta.label);
   updateConnectButton();
 }
 
@@ -102,10 +110,8 @@ function setConfigInputs(config: StreamStartPayload["config"]): void {
   rootModeInput.value = config.rootMode ?? "auto";
   screenOffInput.checked = config.screenOffOnStart ?? true;
   keepAwakeInput.checked = config.keepScreenAwake ?? true;
-  powerOnInput.checked = config.powerOnOnStart ?? false;
-  powerOffOnCloseInput.checked = config.powerOffOnClose ?? false;
+  powerOffOnCloseInput.checked = config.powerOffOnClose ?? true;
   audioEnabledInput.checked = config.audioEnabled ?? false;
-  audioCodecInput.value = config.audioCodec ?? "aac";
 }
 
 function readNumberInput(input: HTMLInputElement, min: number): number | undefined {
@@ -120,13 +126,26 @@ function readNumberInput(input: HTMLInputElement, min: number): number | undefin
 }
 
 function setMode(mode?: "standard" | "root" | "pending" | "view-only"): void {
-  const label =
-    mode === "standard" ? "Standard" :
-    mode === "root" ? "Root" :
-    mode === "view-only" ? "View Only" :
-    "Pending";
-  modeBadge.textContent = label;
+  const meta =
+    mode === "standard" ? { icon: "S", label: "标准控制" } :
+    mode === "root" ? { icon: "#", label: "Root 控制" } :
+    mode === "view-only" ? { icon: "👁", label: "仅观看" } :
+    { icon: "…", label: "控制模式待定" };
+  modeBadge.textContent = meta.icon;
   modeBadge.dataset.mode = mode ?? "pending";
+  modeBadge.title = meta.label;
+  modeBadge.setAttribute("aria-label", meta.label);
+}
+
+function setDeviceScreenState(state: "on" | "off" | "unknown"): void {
+  const meta =
+    state === "on" ? { icon: "☀", label: "真机亮屏" } :
+    state === "off" ? { icon: "◼", label: "真机黑屏" } :
+    { icon: "?", label: "真机屏幕状态未知" };
+  screenStateBadge.dataset.state = state;
+  screenStateBadge.textContent = meta.icon;
+  screenStateBadge.title = meta.label;
+  screenStateBadge.setAttribute("aria-label", meta.label);
 }
 
 function setOverlayVisible(visible: boolean): void {
@@ -522,10 +541,8 @@ document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click"
       rootMode: rootModeInput.value as "auto" | "always" | "never",
       screenOffOnStart: screenOffInput.checked,
       keepScreenAwake: keepAwakeInput.checked,
-      powerOnOnStart: powerOnInput.checked,
       powerOffOnClose: powerOffOnCloseInput.checked,
       audioEnabled: audioEnabledInput.checked,
-      audioCodec: audioCodecInput.value as "opus" | "aac",
     },
   });
 });
@@ -565,6 +582,9 @@ window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessag
         }
       }
       return;
+    case "device-screen":
+      setDeviceScreenState(message.state);
+      return;
     case "error":
       setOverlayVisible(true);
       setStatus("错误", message.message);
@@ -577,3 +597,4 @@ window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessag
 
 post({ type: "ready" });
 updateConnectButton();
+setDeviceScreenState("unknown");

@@ -121,6 +121,29 @@ body {
   white-space: nowrap;
 }
 
+.badge.icon-badge {
+  width: 25px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.badge.status[data-state="streaming"] {
+  color: #69d79a;
+}
+
+.badge.status[data-state="active"] {
+  color: #d5b05a;
+}
+
+.badge.status[data-state="error"] {
+  color: #ff8a91;
+}
+
 .badge.mode[data-mode="standard"] {
   color: #6cb7ff;
 }
@@ -131,6 +154,18 @@ body {
 
 .badge.mode[data-mode="pending"] {
   color: #d5b05a;
+}
+
+.badge.screen[data-state="on"] {
+  color: #ffd36a;
+}
+
+.badge.screen[data-state="off"] {
+  color: #8dd7a7;
+}
+
+.badge.screen[data-state="unknown"] {
+  color: var(--muted);
 }
 
 .screen-stage {
@@ -153,22 +188,6 @@ body {
   border-radius: 18px;
   touch-action: none;
   image-rendering: auto;
-}
-
-.screen-frame {
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 12px;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-}
-
-.screen-notch {
-  width: 52px;
-  height: 5px;
-  border-radius: 0 0 7px 7px;
-  background: rgba(255, 255, 255, 0.08);
 }
 
 .floating-actions {
@@ -320,6 +339,10 @@ label {
   gap: 10px;
 }
 
+.settings-grid.compact {
+  grid-template-columns: 1fr;
+}
+
 label {
   display: grid;
   gap: 4px;
@@ -335,6 +358,18 @@ label {
   width: 16px;
   height: 16px;
   margin: 0;
+}
+
+.hint-block {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.hint-block code {
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--fg);
 }
 
 .utility-actions {

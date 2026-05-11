@@ -139,27 +139,27 @@
         "scrcpySidebar.screenOffOnStart": {
           "type": "boolean",
           "default": true,
-          "description": "Turn off device screen after scrcpy control starts."
+          "description": "Blank the physical device screen after the video stream is ready."
         },
         "scrcpySidebar.keepScreenAwake": {
           "type": "boolean",
           "default": true,
-          "description": "Ask scrcpy server to keep the device awake while connected."
+          "description": "Keep the physical device awake while connected. Uses scrcpy stay_awake and a temporary 24h screen_off_timeout."
         },
         "scrcpySidebar.powerOnOnStart": {
           "type": "boolean",
           "default": false,
-          "description": "Ask scrcpy server to power on the device screen when starting."
+          "description": "Request the physical device screen to wake before streaming starts."
         },
         "scrcpySidebar.powerOffOnClose": {
           "type": "boolean",
           "default": true,
-          "description": "Ask scrcpy server to power off the device screen when closing."
+          "description": "Turn off the physical device screen when the session closes."
         },
         "scrcpySidebar.audioEnabled": {
           "type": "boolean",
           "default": false,
-          "description": "Experimental audio streaming toggle."
+          "description": "Enable physical device audio streaming."
         },
         "scrcpySidebar.audioCodec": {
           "type": "string",
