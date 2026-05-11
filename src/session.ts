@@ -17,6 +17,7 @@ import {
   AndroidKeyEventMeta,
   AndroidMotionEventAction,
   AndroidMotionEventButton,
+  AndroidScreenPowerMode,
   DefaultServerPath,
   ScrcpyInstanceId,
   ScrcpyPointerId,
@@ -82,6 +83,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private lastScrcpyLogs: string[] = [];
   private connectInFlight = false;
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root" };
+  private screenPowerOffPending = false;
   private codecFallbackScheduled = false;
   private webviewMessageQueue: ExtensionToWebviewMessage[] = [];
   private webviewMessageDrainRunning = false;
@@ -213,6 +215,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         await this.reconnect();
         return;
       case "video-ready":
+        await this.applyPendingScreenPowerOff();
         return;
       case "decoder-error":
         await this.handleDecoderError(message.detail);
@@ -230,20 +233,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         await this.injectKeyboardEvent(message);
         return;
       case "apply-config":
-        this.currentStreamConfig = {
-          ...this.currentStreamConfig,
-          ...message.config,
-        };
-        if (message.config.rootMode) {
-          this.currentRootMode = message.config.rootMode;
-        }
-        void this.post({
-          type: "config",
-          config: this.currentStreamConfig,
-        });
-        if (this.currentSerial) {
-          await this.reconnect();
-        }
+        await this.persistConfig(message.config);
         return;
       case "pointer":
         await this.injectPointer(message);
@@ -492,6 +482,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         height: videoStream.height || metadataHeight,
       };
       this.videoPacketsSent = 0;
+      this.screenPowerOffPending = !!this.currentStreamConfig.screenOffOnStart;
 
       const startPayload: StreamStartPayload = {
         serial,
@@ -586,6 +577,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
     this.scrcpyAbort.abort();
     this.scrcpyAbort = new AbortController();
+    this.screenPowerOffPending = false;
 
     if (this.videoLoop) {
       try {
@@ -1002,6 +994,25 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     return await adb.subprocess.noneProtocol.spawnWaitText(command);
   }
 
+  private async applyPendingScreenPowerOff(): Promise<void> {
+    if (!this.screenPowerOffPending) {
+      return;
+    }
+
+    const controller = this.scrcpyClient?.controller;
+    if (!controller) {
+      return;
+    }
+
+    this.screenPowerOffPending = false;
+    try {
+      await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
+      this.output.appendLine("device screen turned off after first video frame");
+    } catch (error) {
+      this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
+    }
+  }
+
   private handleScrcpyLogLine(line: string): void {
     if (
       this.activeControlMode === "standard" &&
@@ -1126,7 +1137,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       cleanup: true,
       powerOn: !!this.currentStreamConfig.powerOnOnStart,
       powerOffOnClose: !!this.currentStreamConfig.powerOffOnClose,
-      screenOffTimeout: this.currentStreamConfig.screenOffOnStart ? 0 : undefined,
       stayAwake: !!this.currentStreamConfig.keepScreenAwake,
       maxFps: this.currentStreamConfig.maxFps,
       maxSize: this.currentStreamConfig.maxSize,
@@ -1255,5 +1265,16 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private isRootUnavailableError(error: unknown): boolean {
     const text = String(error);
     return text.includes("su") || text.includes("not found") || text.includes("permission denied");
+  }
+
+  private async persistConfig(config: Partial<StreamConfig>): Promise<void> {
+    const settings = vscode.workspace.getConfiguration("scrcpySidebar");
+    const entries = Object.entries(config) as Array<[keyof StreamConfig, StreamConfig[keyof StreamConfig]]>;
+    for (const [key, value] of entries) {
+      if (value === undefined) {
+        continue;
+      }
+      await settings.update(key, value, vscode.ConfigurationTarget.Global);
+    }
   }
 }
