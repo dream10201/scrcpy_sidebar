@@ -102,11 +102,12 @@ npx @vscode/vsce package
 当前默认策略：
 
 - 默认使用 `H.264`
+- 默认使用更偏性能的投屏参数：`15 FPS`、`960` 最大尺寸、`2 Mbps` 码率
 - 默认先使用标准 scrcpy 控制，仅在标准输入注入被拒时自动切换 `su`
 - 默认客户端视频缓冲为 `50ms`
 - 默认开启“连接期间保持常亮”
 - 默认请求 scrcpy server 启动后熄灭设备屏幕
-- 默认启动时不主动点亮屏幕，断开后也不主动熄屏
+- 默认启动时不主动点亮屏幕，断开后主动熄屏
 - `scrcpySidebar.keepScreenAwake` 现在优先使用 scrcpy server 的 `stayAwake` 能力
 - 运行时修改播放参数会同步到侧边栏；修改 ADB Host、ADB Port 或 scrcpy-server 版本会重建会话
 
