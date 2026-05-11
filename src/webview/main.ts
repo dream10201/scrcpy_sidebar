@@ -60,6 +60,27 @@ let currentStatus = "idle";
 let videoBufferMs = 50;
 let firstQueuedPacketAt = 0;
 let bufferTimer: number | undefined;
+let wheelGestureLastAt = 0;
+let wheelGestureAccumulatedX = 0;
+let wheelGestureAccumulatedY = 0;
+let wheelGestureBackTriggered = false;
+let lastWheelBackAt = 0;
+let touchpadDragPoint: { x: number; y: number } | undefined;
+let touchpadDragLastAt = 0;
+let touchpadDragEndTimer: number | undefined;
+let touchpadDragAccumulatedX = 0;
+let touchpadDragAccumulatedY = 0;
+let touchpadMomentumSuppressUntil = 0;
+
+const wheelGestureResetMs = 180;
+const wheelBackThresholdPx = 60;
+const wheelBackVerticalRatio = 0.45;
+const wheelBackCooldownMs = 650;
+const touchpadDragEndDelayMs = 70;
+const touchpadHorizontalEndDelayMs = 28;
+const touchpadDragRestartGapMs = 140;
+const touchpadMomentumTailThresholdPx = 6;
+const touchpadMomentumSuppressMs = 220;
 
 const specialKeyboardMap: Record<string, string> = {
   Enter: "Enter",
@@ -355,7 +376,7 @@ function enqueueVideo(packet: VideoPacketPayload): void {
   void pumpDecoder();
 }
 
-function mapPoint(event: PointerEvent): { x: number; y: number } | undefined {
+function mapClientPoint(clientX: number, clientY: number): { x: number; y: number } | undefined {
   if (!currentStream || canvas.width === 0 || canvas.height === 0) {
     return undefined;
   }
@@ -365,9 +386,13 @@ function mapPoint(event: PointerEvent): { x: number; y: number } | undefined {
     return undefined;
   }
 
-  const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
-  const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+  const x = ((clientX - rect.left) / rect.width) * canvas.width;
+  const y = ((clientY - rect.top) / rect.height) * canvas.height;
   return { x, y };
+}
+
+function mapPoint(event: PointerEvent): { x: number; y: number } | undefined {
+  return mapClientPoint(event.clientX, event.clientY);
 }
 
 function sendPointer(phase: "down" | "move" | "up", event: PointerEvent): void {
@@ -387,6 +412,145 @@ function sendPointer(phase: "down" | "move" | "up", event: PointerEvent): void {
     pressure: event.pressure || (phase === "up" ? 0 : 1),
     buttons: event.buttons,
   });
+}
+
+function normalizeWheelDelta(event: WheelEvent): { deltaX: number; deltaY: number } {
+  const deltaModeScale =
+    event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 40 :
+    event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 800 :
+    1;
+  const deltaX = event.deltaX * deltaModeScale;
+  const deltaY = event.deltaY * deltaModeScale;
+  return { deltaX, deltaY };
+}
+
+function shouldTriggerBackFromWheel(deltaX: number, deltaY: number): boolean {
+  if (touchpadDragPoint) {
+    return false;
+  }
+
+  const now = performance.now();
+  if (now - wheelGestureLastAt > wheelGestureResetMs) {
+    wheelGestureAccumulatedX = 0;
+    wheelGestureAccumulatedY = 0;
+    wheelGestureBackTriggered = false;
+  }
+
+  wheelGestureLastAt = now;
+  wheelGestureAccumulatedX += deltaX;
+  wheelGestureAccumulatedY += deltaY;
+
+  const rightSwipeDistance = wheelGestureAccumulatedX;
+  const verticalDistance = Math.abs(wheelGestureAccumulatedY);
+  const isHorizontalIntent = rightSwipeDistance > 0 && verticalDistance <= rightSwipeDistance * wheelBackVerticalRatio;
+  if (
+    wheelGestureBackTriggered ||
+    !isHorizontalIntent ||
+    rightSwipeDistance < wheelBackThresholdPx ||
+    now - lastWheelBackAt < wheelBackCooldownMs
+  ) {
+    return false;
+  }
+
+  wheelGestureBackTriggered = true;
+  lastWheelBackAt = now;
+  return true;
+}
+
+function clampCanvasPoint(point: { x: number; y: number }): { x: number; y: number } {
+  return {
+    x: Math.max(0, Math.min(canvas.width, point.x)),
+    y: Math.max(0, Math.min(canvas.height, point.y)),
+  };
+}
+
+function sendSyntheticPointer(phase: "down" | "move" | "up", point: { x: number; y: number }): void {
+  post({
+    type: "pointer",
+    phase,
+    pointerId: -20,
+    x: point.x,
+    y: point.y,
+    width: canvas.width,
+    height: canvas.height,
+    pressure: phase === "up" ? 0 : 1,
+    buttons: phase === "up" ? 0 : 1,
+  });
+}
+
+function finishTouchpadDrag(): void {
+  if (touchpadDragEndTimer !== undefined) {
+    window.clearTimeout(touchpadDragEndTimer);
+    touchpadDragEndTimer = undefined;
+  }
+
+  if (!touchpadDragPoint) {
+    return;
+  }
+
+  const horizontalIntent = Math.abs(touchpadDragAccumulatedX) > Math.abs(touchpadDragAccumulatedY) * 1.35;
+  sendSyntheticPointer("up", touchpadDragPoint);
+  touchpadDragPoint = undefined;
+  touchpadDragAccumulatedX = 0;
+  touchpadDragAccumulatedY = 0;
+  if (horizontalIntent) {
+    touchpadMomentumSuppressUntil = performance.now() + touchpadMomentumSuppressMs;
+  }
+}
+
+function shouldIgnoreTouchpadMomentumTail(deltaX: number, deltaY: number): boolean {
+  if (touchpadDragPoint || performance.now() > touchpadMomentumSuppressUntil) {
+    return false;
+  }
+
+  const mostlyHorizontal = Math.abs(deltaX) > Math.abs(deltaY) * 1.2;
+  const tailMagnitude = Math.hypot(deltaX, deltaY);
+  return mostlyHorizontal && tailMagnitude < touchpadMomentumTailThresholdPx;
+}
+
+function moveTouchpadDrag(startPoint: { x: number; y: number }, deltaX: number, deltaY: number): void {
+  const now = performance.now();
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return;
+  }
+
+  const shouldRestart = !touchpadDragPoint || now - touchpadDragLastAt > touchpadDragRestartGapMs;
+  if (shouldRestart) {
+    finishTouchpadDrag();
+    touchpadDragPoint = clampCanvasPoint(startPoint);
+    touchpadDragAccumulatedX = 0;
+    touchpadDragAccumulatedY = 0;
+    sendSyntheticPointer("down", touchpadDragPoint);
+  }
+
+  touchpadDragLastAt = now;
+  touchpadDragAccumulatedX += deltaX;
+  touchpadDragAccumulatedY += deltaY;
+
+  const videoDeltaX = deltaX * (canvas.width / rect.width);
+  const videoDeltaY = deltaY * (canvas.height / rect.height);
+  touchpadDragPoint = clampCanvasPoint({
+    x: touchpadDragPoint!.x - videoDeltaX,
+    y: touchpadDragPoint!.y - videoDeltaY,
+  });
+  sendSyntheticPointer("move", touchpadDragPoint);
+
+  if (touchpadDragEndTimer !== undefined) {
+    window.clearTimeout(touchpadDragEndTimer);
+  }
+
+  const horizontalIntent = Math.abs(touchpadDragAccumulatedX) > Math.abs(touchpadDragAccumulatedY) * 1.35;
+  const isMomentumTail = Math.hypot(deltaX, deltaY) < touchpadMomentumTailThresholdPx;
+  if (isMomentumTail && horizontalIntent) {
+    touchpadDragEndTimer = window.setTimeout(finishTouchpadDrag, 0);
+    return;
+  }
+
+  touchpadDragEndTimer = window.setTimeout(
+    finishTouchpadDrag,
+    horizontalIntent ? touchpadHorizontalEndDelayMs : touchpadDragEndDelayMs,
+  );
 }
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -431,6 +595,36 @@ canvas.addEventListener("pointercancel", (event) => {
 canvas.addEventListener("contextmenu", (event) => {
   event.preventDefault();
 });
+
+canvas.addEventListener("wheel", (event) => {
+  const point = mapClientPoint(event.clientX, event.clientY);
+  if (!point) {
+    return;
+  }
+
+  const { deltaX, deltaY } = normalizeWheelDelta(event);
+  if (Math.abs(deltaX) < 0.001 && Math.abs(deltaY) < 0.001) {
+    return;
+  }
+
+  event.preventDefault();
+  canvas.focus();
+  if (shouldIgnoreTouchpadMomentumTail(deltaX, deltaY)) {
+    return;
+  }
+
+  if (shouldTriggerBackFromWheel(deltaX, deltaY)) {
+    post({
+      type: "edge-swipe-back",
+      y: point.y,
+      width: canvas.width,
+      height: canvas.height,
+    });
+    return;
+  }
+
+  moveTouchpadDrag(point, deltaX, deltaY);
+}, { passive: false });
 
 function handleKeyboardEvent(event: KeyboardEvent, action: "down" | "up"): void {
   if (!currentStream || !playerPage.classList.contains("active") || document.activeElement !== canvas) {

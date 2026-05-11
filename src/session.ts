@@ -93,6 +93,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private webviewMessageDrainRunning = false;
   private queuedVideoMessages = 0;
   private readonly maxQueuedVideoMessages = 24;
+  private edgeSwipeInProgress = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -270,7 +271,13 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         await this.persistConfig(message.config);
         return;
       case "pointer":
-        await this.injectPointer(message);
+        void this.injectPointer(message);
+        return;
+      case "scroll":
+        void this.injectScroll(message);
+        return;
+      case "edge-swipe-back":
+        await this.injectEdgeSwipeBack(message);
         return;
     }
   }
@@ -729,6 +736,102 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
   }
 
+  private async injectScroll(message: Extract<WebviewToExtensionMessage, { type: "scroll" }>): Promise<void> {
+    const controller = this.scrcpyClient?.controller;
+    if (!controller) {
+      return;
+    }
+
+    if (!this.streamSize.width || !this.streamSize.height) {
+      return;
+    }
+
+    const pointerX = Math.max(0, Math.min(this.streamSize.width, Math.round(message.x)));
+    const pointerY = Math.max(0, Math.min(this.streamSize.height, Math.round(message.y)));
+    const scrollX = Math.max(-16, Math.min(16, message.scrollX));
+    const scrollY = Math.max(-16, Math.min(16, message.scrollY));
+    if (Math.abs(scrollX) < 0.001 && Math.abs(scrollY) < 0.001) {
+      return;
+    }
+
+    try {
+      await controller.injectScroll({
+        pointerX,
+        pointerY,
+        videoWidth: this.streamSize.width,
+        videoHeight: this.streamSize.height,
+        scrollX,
+        scrollY,
+        buttons: AndroidMotionEventButton.None,
+      });
+    } catch (error) {
+      this.output.appendLine(`injectScroll failed: ${String(error)}`);
+    }
+  }
+
+  private async injectEdgeSwipeBack(message: Extract<WebviewToExtensionMessage, { type: "edge-swipe-back" }>): Promise<void> {
+    const controller = this.scrcpyClient?.controller;
+    if (!controller || this.edgeSwipeInProgress || this.isPointerDown) {
+      return;
+    }
+
+    if (!this.streamSize.width || !this.streamSize.height) {
+      return;
+    }
+
+    const startX = 1;
+    const y = Math.max(1, Math.min(this.streamSize.height - 1, Math.round(message.y)));
+    const endX = Math.max(260, Math.min(520, Math.round(this.streamSize.width * 0.42)));
+    const steps = 14;
+
+    this.edgeSwipeInProgress = true;
+    try {
+      await controller.injectTouch({
+        action: AndroidMotionEventAction.Down,
+        pointerId: ScrcpyPointerId.Finger,
+        pointerX: startX,
+        pointerY: y,
+        videoWidth: this.streamSize.width,
+        videoHeight: this.streamSize.height,
+        pressure: 1,
+        actionButton: AndroidMotionEventButton.None,
+        buttons: AndroidMotionEventButton.None,
+      });
+
+      for (let step = 1; step <= steps; step += 1) {
+        await sleep(14);
+        await controller.injectTouch({
+          action: AndroidMotionEventAction.Move,
+          pointerId: ScrcpyPointerId.Finger,
+          pointerX: Math.round(startX + ((endX - startX) * step) / steps),
+          pointerY: y,
+          videoWidth: this.streamSize.width,
+          videoHeight: this.streamSize.height,
+          pressure: 1,
+          actionButton: AndroidMotionEventButton.None,
+          buttons: AndroidMotionEventButton.None,
+        });
+      }
+
+      await sleep(20);
+      await controller.injectTouch({
+        action: AndroidMotionEventAction.Up,
+        pointerId: ScrcpyPointerId.Finger,
+        pointerX: endX,
+        pointerY: y,
+        videoWidth: this.streamSize.width,
+        videoHeight: this.streamSize.height,
+        pressure: 0,
+        actionButton: AndroidMotionEventButton.None,
+        buttons: AndroidMotionEventButton.None,
+      });
+    } catch (error) {
+      this.output.appendLine(`injectEdgeSwipeBack failed: ${String(error)}`);
+    } finally {
+      this.edgeSwipeInProgress = false;
+    }
+  }
+
   private async injectKey(key: "back" | "home" | "appSwitch" | "power"): Promise<void> {
     const controller = this.scrcpyClient?.controller;
     const serial = this.currentSerial;
@@ -746,6 +849,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
             : AndroidKeyCode.Power;
 
     if (key === "power") {
+      if (this.currentStreamConfig.screenOffOnStart) {
+        await this.restoreRemoteScreenWithoutLeavingDeviceOn();
+        return;
+      }
+
       await this.injectKeyViaAdb(serial, "26");
       return;
     }
@@ -774,6 +882,38 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         key === "appSwitch" ? "187" :
         "26";
       await this.injectKeyViaAdb(serial, fallback);
+    }
+  }
+
+  private async restoreRemoteScreenWithoutLeavingDeviceOn(): Promise<void> {
+    const controller = this.scrcpyClient?.controller;
+    const serial = this.currentSerial;
+    if (!serial) {
+      return;
+    }
+
+    if (!controller) {
+      await this.injectKeyViaAdb(serial, "224");
+      return;
+    }
+
+    this.output.appendLine("restoring remote screen while keeping physical display blank");
+    try {
+      await controller.backOrScreenOn(AndroidKeyEventAction.Down);
+      await sleep(260);
+      await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
+      await this.syncDeviceScreenState("off");
+    } catch (error) {
+      this.output.appendLine(`restore remote screen failed: ${String(error)}`);
+      try {
+        await this.injectKeyViaAdb(serial, "224");
+        await sleep(260);
+        await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
+        await this.syncDeviceScreenState("off");
+      } catch (fallbackError) {
+        this.output.appendLine(`restore remote screen fallback failed: ${String(fallbackError)}`);
+        await this.syncDeviceScreenState("unknown");
+      }
     }
   }
 

@@ -103,4 +103,19 @@ export type WebviewToExtensionMessage =
       height: number;
       pressure: number;
       buttons: number;
+    }
+  | {
+      type: "scroll";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      scrollX: number;
+      scrollY: number;
+    }
+  | {
+      type: "edge-swipe-back";
+      y: number;
+      width: number;
+      height: number;
     };
