@@ -70,11 +70,17 @@ let wheelGestureAccumulatedY = 0;
 let wheelGestureBackTriggered = false;
 let lastWheelBackAt = 0;
 let touchpadDragPoint: { x: number; y: number } | undefined;
+let touchpadDragStartPoint: { x: number; y: number } | undefined;
+let touchpadPendingMovePoint: { x: number; y: number } | undefined;
+let touchpadMoveFrame: number | undefined;
+let touchpadQueuedVideoDeltaX = 0;
+let touchpadQueuedVideoDeltaY = 0;
 let touchpadDragLastAt = 0;
 let touchpadDragEndTimer: number | undefined;
 let touchpadDragAccumulatedX = 0;
 let touchpadDragAccumulatedY = 0;
 let touchpadMomentumSuppressUntil = 0;
+let touchpadFlingInProgress = false;
 
 const wheelGestureResetMs = 180;
 const wheelBackThresholdPx = 60;
@@ -83,8 +89,17 @@ const wheelBackCooldownMs = 650;
 const touchpadDragEndDelayMs = 70;
 const touchpadHorizontalEndDelayMs = 28;
 const touchpadDragRestartGapMs = 140;
+const touchpadDragStartThresholdPx = 10;
+const touchpadMaxMoveStepPx = 42;
 const touchpadMomentumTailThresholdPx = 6;
 const touchpadMomentumSuppressMs = 220;
+const touchpadFlingThresholdPx = 48;
+const touchpadFlingVerticalRatio = 0.35;
+const touchpadFlingDistanceRatio = 0.78;
+const touchpadFlingSuppressMs = 850;
+const touchpadHorizontalIntentRatio = 1.25;
+const touchpadVerticalIntentRatio = 1.15;
+const touchpadVerticalDamping = 0.82;
 
 const specialKeyboardMap: Record<string, string> = {
   Enter: "Enter",
@@ -525,6 +540,133 @@ function sendSyntheticPointer(phase: "down" | "move" | "up", point: { x: number;
   });
 }
 
+function runTouchpadHorizontalFling(startPoint: { x: number; y: number }, direction: number): void {
+  if (touchpadFlingInProgress || !canvas.width || !canvas.height) {
+    return;
+  }
+
+  finishTouchpadDrag();
+  touchpadFlingInProgress = true;
+  touchpadMomentumSuppressUntil = performance.now() + touchpadFlingSuppressMs;
+  wheelGestureAccumulatedX = 0;
+  wheelGestureAccumulatedY = 0;
+  wheelGestureBackTriggered = false;
+  touchpadDragLastAt = 0;
+
+  const directionSign = Math.sign(direction || 1);
+  const edgeInset = Math.max(2, Math.round(canvas.width * 0.015));
+  const start = clampCanvasPoint({
+    x: directionSign > 0 ? canvas.width - edgeInset : edgeInset,
+    y: Math.max(canvas.height * 0.18, Math.min(canvas.height * 0.82, startPoint.y)),
+  });
+  const end = clampCanvasPoint({
+    x: directionSign > 0 ? edgeInset : canvas.width - edgeInset,
+    y: start.y,
+  });
+  const points = [
+    {
+      x: start.x + (end.x - start.x) * 0.42,
+      y: start.y,
+    },
+    {
+      x: start.x + (end.x - start.x) * 0.82,
+      y: start.y,
+    },
+    end,
+  ];
+
+  sendSyntheticPointer("down", start);
+  let index = 0;
+  const step = () => {
+    const point = points[index];
+    if (!point) {
+      sendSyntheticPointer("up", end);
+      touchpadFlingInProgress = false;
+      resetTouchpadDragState();
+      return;
+    }
+    sendSyntheticPointer("move", clampCanvasPoint(point));
+    index += 1;
+    window.setTimeout(step, index === points.length ? 10 : 8);
+  };
+  window.setTimeout(step, 6);
+}
+
+function shouldTriggerTouchpadHorizontalFling(deltaX: number, deltaY: number): boolean {
+  if (touchpadDragPoint || touchpadFlingInProgress) {
+    return false;
+  }
+
+  const absX = Math.abs(touchpadDragAccumulatedX + deltaX);
+  const absY = Math.abs(touchpadDragAccumulatedY + deltaY);
+  return absX >= touchpadFlingThresholdPx && absY <= absX * touchpadFlingVerticalRatio;
+}
+
+function flushTouchpadMove(): void {
+  while (touchpadDragPoint && (Math.abs(touchpadQueuedVideoDeltaX) >= 0.5 || Math.abs(touchpadQueuedVideoDeltaY) >= 0.5)) {
+    drainTouchpadMoveStep();
+  }
+}
+
+function drainTouchpadMoveStep(): void {
+  if (!touchpadDragPoint) {
+    touchpadQueuedVideoDeltaX = 0;
+    touchpadQueuedVideoDeltaY = 0;
+    touchpadPendingMovePoint = undefined;
+    return;
+  }
+
+  const magnitude = Math.hypot(touchpadQueuedVideoDeltaX, touchpadQueuedVideoDeltaY);
+  if (magnitude < 0.5) {
+    touchpadQueuedVideoDeltaX = 0;
+    touchpadQueuedVideoDeltaY = 0;
+    touchpadPendingMovePoint = undefined;
+    return;
+  }
+
+  const scale = Math.min(1, touchpadMaxMoveStepPx / magnitude);
+  const stepX = touchpadQueuedVideoDeltaX * scale;
+  const stepY = touchpadQueuedVideoDeltaY * scale;
+  touchpadQueuedVideoDeltaX -= stepX;
+  touchpadQueuedVideoDeltaY -= stepY;
+  touchpadDragPoint = clampCanvasPoint({
+    x: touchpadDragPoint.x - stepX,
+    y: touchpadDragPoint.y - stepY,
+  });
+  touchpadPendingMovePoint = touchpadDragPoint;
+  sendSyntheticPointer("move", touchpadDragPoint);
+}
+
+function scheduleTouchpadMove(deltaX: number, deltaY: number): void {
+  touchpadQueuedVideoDeltaX += deltaX;
+  touchpadQueuedVideoDeltaY += deltaY;
+  if (touchpadMoveFrame !== undefined) {
+    return;
+  }
+
+  touchpadMoveFrame = window.requestAnimationFrame(() => {
+    touchpadMoveFrame = undefined;
+    drainTouchpadMoveStep();
+    if (touchpadDragPoint && (Math.abs(touchpadQueuedVideoDeltaX) >= 0.5 || Math.abs(touchpadQueuedVideoDeltaY) >= 0.5)) {
+      scheduleTouchpadMove(0, 0);
+    }
+  });
+}
+
+function resetTouchpadDragState(): void {
+  touchpadDragPoint = undefined;
+  touchpadDragStartPoint = undefined;
+  touchpadDragAccumulatedX = 0;
+  touchpadDragAccumulatedY = 0;
+  touchpadPendingMovePoint = undefined;
+  touchpadQueuedVideoDeltaX = 0;
+  touchpadQueuedVideoDeltaY = 0;
+  if (touchpadMoveFrame !== undefined) {
+    window.cancelAnimationFrame(touchpadMoveFrame);
+    touchpadMoveFrame = undefined;
+  }
+}
+
 function finishTouchpadDrag(): void {
   if (touchpadDragEndTimer !== undefined) {
     window.clearTimeout(touchpadDragEndTimer);
@@ -532,22 +674,26 @@ function finishTouchpadDrag(): void {
   }
 
   if (!touchpadDragPoint) {
+    resetTouchpadDragState();
     return;
   }
 
   const horizontalIntent = Math.abs(touchpadDragAccumulatedX) > Math.abs(touchpadDragAccumulatedY) * 1.35;
+  flushTouchpadMove();
   sendSyntheticPointer("up", touchpadDragPoint);
-  touchpadDragPoint = undefined;
-  touchpadDragAccumulatedX = 0;
-  touchpadDragAccumulatedY = 0;
+  resetTouchpadDragState();
   if (horizontalIntent) {
     touchpadMomentumSuppressUntil = performance.now() + touchpadMomentumSuppressMs;
   }
 }
 
 function shouldIgnoreTouchpadMomentumTail(deltaX: number, deltaY: number): boolean {
-  if (touchpadDragPoint || performance.now() > touchpadMomentumSuppressUntil) {
+  if (touchpadDragPoint) {
     return false;
+  }
+
+  if (touchpadFlingInProgress || performance.now() <= touchpadMomentumSuppressUntil) {
+    return Math.abs(deltaX) > Math.abs(deltaY) * 0.35;
   }
 
   const mostlyHorizontal = Math.abs(deltaX) > Math.abs(deltaY) * 1.2;
@@ -562,32 +708,58 @@ function moveTouchpadDrag(startPoint: { x: number; y: number }, deltaX: number, 
     return;
   }
 
-  const shouldRestart = !touchpadDragPoint || now - touchpadDragLastAt > touchpadDragRestartGapMs;
+  const shouldRestart = (!touchpadDragPoint && !touchpadDragStartPoint) || now - touchpadDragLastAt > touchpadDragRestartGapMs;
   if (shouldRestart) {
     finishTouchpadDrag();
-    touchpadDragPoint = clampCanvasPoint(startPoint);
+    touchpadDragStartPoint = clampCanvasPoint(startPoint);
     touchpadDragAccumulatedX = 0;
     touchpadDragAccumulatedY = 0;
-    sendSyntheticPointer("down", touchpadDragPoint);
   }
 
   touchpadDragLastAt = now;
   touchpadDragAccumulatedX += deltaX;
   touchpadDragAccumulatedY += deltaY;
 
-  const videoDeltaX = deltaX * (canvas.width / rect.width);
-  const videoDeltaY = deltaY * (canvas.height / rect.height);
-  touchpadDragPoint = clampCanvasPoint({
-    x: touchpadDragPoint!.x - videoDeltaX,
-    y: touchpadDragPoint!.y - videoDeltaY,
-  });
-  sendSyntheticPointer("move", touchpadDragPoint);
+  const accumulatedAbsX = Math.abs(touchpadDragAccumulatedX);
+  const accumulatedAbsY = Math.abs(touchpadDragAccumulatedY);
+  const horizontalIntent = accumulatedAbsX > accumulatedAbsY * touchpadHorizontalIntentRatio;
+  const verticalIntent = accumulatedAbsY > accumulatedAbsX * touchpadVerticalIntentRatio;
+  if (!touchpadDragPoint && horizontalIntent) {
+    if (touchpadDragEndTimer !== undefined) {
+      window.clearTimeout(touchpadDragEndTimer);
+    }
+    touchpadDragEndTimer = window.setTimeout(finishTouchpadDrag, touchpadHorizontalEndDelayMs);
+    return;
+  }
+
+  let moveDeltaX = deltaX;
+  let moveDeltaY = deltaY;
+  if (!touchpadDragPoint) {
+    if (Math.hypot(touchpadDragAccumulatedX, touchpadDragAccumulatedY) < touchpadDragStartThresholdPx) {
+      if (touchpadDragEndTimer !== undefined) {
+        window.clearTimeout(touchpadDragEndTimer);
+      }
+      touchpadDragEndTimer = window.setTimeout(finishTouchpadDrag, touchpadDragEndDelayMs);
+      return;
+    }
+
+    touchpadDragPoint = touchpadDragStartPoint ?? clampCanvasPoint(startPoint);
+    sendSyntheticPointer("down", touchpadDragPoint);
+    moveDeltaX = touchpadDragAccumulatedX;
+    moveDeltaY = touchpadDragAccumulatedY;
+  }
+
+  const videoDeltaX = moveDeltaX * (canvas.width / rect.width);
+  const videoDeltaY = moveDeltaY * (canvas.height / rect.height);
+  scheduleTouchpadMove(
+    verticalIntent ? 0 : videoDeltaX,
+    videoDeltaY * (verticalIntent ? touchpadVerticalDamping : 1),
+  );
 
   if (touchpadDragEndTimer !== undefined) {
     window.clearTimeout(touchpadDragEndTimer);
   }
 
-  const horizontalIntent = Math.abs(touchpadDragAccumulatedX) > Math.abs(touchpadDragAccumulatedY) * 1.35;
   const isMomentumTail = Math.hypot(deltaX, deltaY) < touchpadMomentumTailThresholdPx;
   if (isMomentumTail && horizontalIntent) {
     touchpadDragEndTimer = window.setTimeout(finishTouchpadDrag, 0);
@@ -660,13 +832,16 @@ canvas.addEventListener("wheel", (event) => {
     return;
   }
 
-  if (shouldTriggerBackFromWheel(deltaX, deltaY)) {
-    post({
-      type: "edge-swipe-back",
-      y: point.y,
-      width: canvas.width,
-      height: canvas.height,
-    });
+  if (shouldTriggerTouchpadHorizontalFling(deltaX, deltaY)) {
+    runTouchpadHorizontalFling(point, touchpadDragAccumulatedX + deltaX);
+    return;
+  }
+
+  if (
+    !touchpadDragPoint &&
+    Math.abs(touchpadDragAccumulatedX + deltaX) > Math.abs(touchpadDragAccumulatedY + deltaY) * touchpadHorizontalIntentRatio
+  ) {
+    moveTouchpadDrag(point, deltaX, deltaY);
     return;
   }
 
