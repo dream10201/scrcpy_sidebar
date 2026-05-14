@@ -14,10 +14,12 @@ function getConfig(): ExtensionConfig {
     videoCodec: config.get("videoCodec", "h264"),
     videoBufferMs: config.get("videoBufferMs", 50),
     autoReconnectDelayMs: config.get("autoReconnectDelayMs", 3000),
-    scrcpyServerVersion: config.get("scrcpyServerVersion", "3.3.4"),
+    scrcpyServerVersion: config.get("scrcpyServerVersion", "4.0"),
     rootMode: config.get("rootMode", "auto"),
     screenOffOnStart: config.get("screenOffOnStart", true),
     keepScreenAwake: config.get("keepScreenAwake", true),
+    keepActive: config.get("keepActive", true),
+    flexDisplay: config.get("flexDisplay", false),
     powerOnOnStart: false,
     powerOffOnClose: config.get("powerOffOnClose", true),
     audioEnabled: config.get("audioEnabled", false),
@@ -256,6 +258,14 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
               <label class="checkbox-row">
                 <input id="keepAwakeInput" type="checkbox" checked />
                 <span>连接时阻止真机休眠</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="keepActiveInput" type="checkbox" checked />
+                <span>Keep active</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="flexDisplayInput" type="checkbox" />
+                <span>Flex display</span>
               </label>
               <label class="checkbox-row">
                 <input id="powerOffOnCloseInput" type="checkbox" checked />

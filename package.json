@@ -83,7 +83,7 @@
         },
         "scrcpySidebar.scrcpyServerVersion": {
           "type": "string",
-          "default": "3.3.4",
+          "default": "4.0",
           "description": "scrcpy-server version downloaded during dependency installation."
         },
         "scrcpySidebar.maxFps": {
@@ -146,6 +146,16 @@
           "default": true,
           "description": "Keep the physical device awake while connected. Uses scrcpy stay_awake and a temporary 24h screen_off_timeout."
         },
+        "scrcpySidebar.keepActive": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the display active by asking scrcpy 4.x to periodically signal user activity."
+        },
+        "scrcpySidebar.flexDisplay": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use scrcpy 4.x flex display mode with a new virtual display resized to the sidebar. This is mainly useful when launching a specific app on that display."
+        },
         "scrcpySidebar.powerOnOnStart": {
           "type": "boolean",
           "default": false,
@@ -180,7 +190,7 @@
     "check": "npm run typecheck && npm run build",
     "package": "npm run build && npx @vscode/vsce package",
     "prepare": "npm run build",
-    "postinstall": "node node_modules/@yume-chan/fetch-scrcpy-server/bin/fetch-server.js 3.3.4"
+    "postinstall": "node node_modules/@yume-chan/fetch-scrcpy-server/bin/fetch-server.js 4.0"
   },
   "devDependencies": {
     "@types/node": "^24.9.1",

@@ -40,6 +40,8 @@ const codecInput = document.querySelector<HTMLSelectElement>("#codecInput")!;
 const rootModeInput = document.querySelector<HTMLSelectElement>("#rootModeInput")!;
 const screenOffInput = document.querySelector<HTMLInputElement>("#screenOffInput")!;
 const keepAwakeInput = document.querySelector<HTMLInputElement>("#keepAwakeInput")!;
+const keepActiveInput = document.querySelector<HTMLInputElement>("#keepActiveInput")!;
+const flexDisplayInput = document.querySelector<HTMLInputElement>("#flexDisplayInput")!;
 const powerOffOnCloseInput = document.querySelector<HTMLInputElement>("#powerOffOnCloseInput")!;
 const audioEnabledInput = document.querySelector<HTMLInputElement>("#audioEnabledInput")!;
 
@@ -58,6 +60,8 @@ let firstFrameNotified = false;
 let decodedPacketCount = 0;
 let currentStatus = "idle";
 let videoBufferMs = 50;
+let lastFlexResize = { width: 0, height: 0 };
+let flexResizeTimer: number | undefined;
 let firstQueuedPacketAt = 0;
 let bufferTimer: number | undefined;
 let wheelGestureLastAt = 0;
@@ -131,6 +135,8 @@ function setConfigInputs(config: StreamStartPayload["config"]): void {
   rootModeInput.value = config.rootMode ?? "auto";
   screenOffInput.checked = config.screenOffOnStart ?? true;
   keepAwakeInput.checked = config.keepScreenAwake ?? true;
+  keepActiveInput.checked = config.keepActive ?? true;
+  flexDisplayInput.checked = config.flexDisplay ?? false;
   powerOffOnCloseInput.checked = config.powerOffOnClose ?? true;
   audioEnabledInput.checked = config.audioEnabled ?? false;
 }
@@ -208,13 +214,27 @@ function disposeDecoder(): void {
     window.clearTimeout(bufferTimer);
     bufferTimer = undefined;
   }
+  if (flexResizeTimer !== undefined) {
+    window.clearTimeout(flexResizeTimer);
+    flexResizeTimer = undefined;
+  }
   firstFrameNotified = false;
   decodedPacketCount = 0;
+  lastFlexResize = { width: 0, height: 0 };
 }
 
 function updateCanvasLayout(): void {
   const bounds = screenStage.getBoundingClientRect();
   if (!bounds.width || !bounds.height) {
+    return;
+  }
+
+  if (currentStream?.config.flexDisplay) {
+    const width = Math.max(1, Math.floor(bounds.width));
+    const height = Math.max(1, Math.floor(bounds.height));
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    scheduleFlexDisplayResizeFromCanvas();
     return;
   }
 
@@ -238,6 +258,33 @@ const resizeObserver = new ResizeObserver(() => {
 });
 
 resizeObserver.observe(screenStage);
+resizeObserver.observe(canvas);
+
+function scheduleFlexDisplayResizeFromCanvas(): void {
+  if (!currentStream?.config.flexDisplay) {
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return;
+  }
+
+  const nextWidth = Math.max(1, Math.min(65535, Math.floor(rect.width)));
+  const nextHeight = Math.max(1, Math.min(65535, Math.floor(rect.height)));
+  if (lastFlexResize.width === nextWidth && lastFlexResize.height === nextHeight) {
+    return;
+  }
+
+  lastFlexResize = { width: nextWidth, height: nextHeight };
+  if (flexResizeTimer !== undefined) {
+    window.clearTimeout(flexResizeTimer);
+  }
+  flexResizeTimer = window.setTimeout(() => {
+    flexResizeTimer = undefined;
+    post({ type: "resize-display", width: nextWidth, height: nextHeight });
+  }, 80);
+}
 
 function packetToMediaPacket(packet: VideoPacketPayload): ScrcpyMediaStreamPacket {
   const binary = new Uint8Array(packet.data);
@@ -735,6 +782,8 @@ document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click"
       rootMode: rootModeInput.value as "auto" | "always" | "never",
       screenOffOnStart: screenOffInput.checked,
       keepScreenAwake: keepAwakeInput.checked,
+      keepActive: keepActiveInput.checked,
+      flexDisplay: flexDisplayInput.checked,
       powerOffOnClose: powerOffOnCloseInput.checked,
       audioEnabled: audioEnabledInput.checked,
     },

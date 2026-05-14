@@ -23,6 +23,7 @@ import {
   ScrcpyPointerId,
   type ScrcpyMediaStreamPacket,
 } from "@yume-chan/scrcpy";
+import { TransformStream } from "@yume-chan/stream-extra";
 import type {
   DeviceSummary,
   ExtensionConfig,
@@ -35,6 +36,12 @@ import type {
 
 interface WebviewLike {
   postMessage(message: ExtensionToWebviewMessage): Thenable<boolean>;
+}
+
+interface DeviceAppSummary {
+  name: string;
+  packageName: string;
+  system: boolean;
 }
 
 function isIpEndpoint(value: string): boolean {
@@ -60,6 +67,55 @@ function shellEscape(argument: string): string {
 }
 
 const KeepAwakeScreenOffTimeoutMs = 24 * 60 * 60 * 1000;
+const Scrcpy4PacketFlagSession = 1n << 63n;
+const Scrcpy4PacketFlagConfig = 1n << 62n;
+const Scrcpy4PacketFlagKeyFrame = 1n << 61n;
+
+function createScrcpy4MediaStreamTransformer(): TransformStream<Uint8Array, ScrcpyMediaStreamPacket> {
+  let pending = new Uint8Array(0);
+
+  return new TransformStream<Uint8Array, ScrcpyMediaStreamPacket>({
+    transform(chunk, controller) {
+      if (pending.length) {
+        const merged = new Uint8Array(pending.length + chunk.length);
+        merged.set(pending, 0);
+        merged.set(chunk, pending.length);
+        pending = merged;
+      } else {
+        pending = new Uint8Array(chunk);
+      }
+
+      while (pending.length >= 12) {
+        const view = new DataView(pending.buffer, pending.byteOffset, pending.byteLength);
+        const ptsAndFlags = view.getBigUint64(0);
+        const packetSize = view.getUint32(8);
+        const frameEnd = 12 + packetSize;
+        if (pending.length < frameEnd) {
+          return;
+        }
+
+        const data = pending.slice(12, frameEnd);
+        pending = pending.slice(frameEnd);
+
+        if (ptsAndFlags & Scrcpy4PacketFlagSession) {
+          continue;
+        }
+
+        if (ptsAndFlags & Scrcpy4PacketFlagConfig) {
+          controller.enqueue({ type: "configuration", data });
+          continue;
+        }
+
+        controller.enqueue({
+          type: "data",
+          data,
+          keyframe: !!(ptsAndFlags & Scrcpy4PacketFlagKeyFrame),
+          pts: ptsAndFlags & ~(Scrcpy4PacketFlagSession | Scrcpy4PacketFlagConfig | Scrcpy4PacketFlagKeyFrame),
+        });
+      }
+    },
+  });
+}
 
 export class ScrcpySidebarSession implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
@@ -74,6 +130,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private videoLoop?: Promise<void>;
   private currentStreamConfig: StreamConfig;
   private currentRootMode: "auto" | "always" | "never";
+  private currentStartAppPackage?: string;
   private currentDeviceName = "";
   private streamSize = { width: 0, height: 0 };
   private videoPacketsSent = 0;
@@ -84,7 +141,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private rootUpgradeScheduled = false;
   private lastScrcpyLogs: string[] = [];
   private connectInFlight = false;
-  private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root" };
+  private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root"; startAppPackage?: string };
   private screenPowerOffPending = false;
   private screenPowerOffTimer?: NodeJS.Timeout;
   private reconnectingInternally = false;
@@ -94,6 +151,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private queuedVideoMessages = 0;
   private readonly maxQueuedVideoMessages = 24;
   private edgeSwipeInProgress = false;
+  private firstVideoDataPacketReceived = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -117,6 +175,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       videoBufferMs: config.videoBufferMs,
       screenOffOnStart: config.screenOffOnStart,
       keepScreenAwake: config.keepScreenAwake,
+      keepActive: config.keepActive,
+      flexDisplay: config.flexDisplay,
       powerOnOnStart: config.powerOnOnStart,
       powerOffOnClose: config.powerOffOnClose,
       audioEnabled: config.audioEnabled,
@@ -196,6 +256,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         this.config.rootMode !== nextConfig.rootMode ||
         this.config.screenOffOnStart !== nextConfig.screenOffOnStart ||
         this.config.keepScreenAwake !== nextConfig.keepScreenAwake ||
+        this.config.keepActive !== nextConfig.keepActive ||
+        this.config.flexDisplay !== nextConfig.flexDisplay ||
         this.config.powerOnOnStart !== nextConfig.powerOnOnStart ||
         this.config.powerOffOnClose !== nextConfig.powerOffOnClose ||
         this.config.audioEnabled !== nextConfig.audioEnabled ||
@@ -212,6 +274,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       videoBufferMs: nextConfig.videoBufferMs,
       screenOffOnStart: nextConfig.screenOffOnStart,
       keepScreenAwake: nextConfig.keepScreenAwake,
+      keepActive: nextConfig.keepActive,
+      flexDisplay: nextConfig.flexDisplay,
       powerOnOnStart: nextConfig.powerOnOnStart,
       powerOffOnClose: nextConfig.powerOffOnClose,
       audioEnabled: nextConfig.audioEnabled,
@@ -255,6 +319,9 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       case "decoder-error":
         await this.handleDecoderError(message.detail);
         return;
+      case "resize-display":
+        await this.resizeFlexDisplay(message.width, message.height);
+        return;
       case "key":
         await this.injectKey(message.key);
         return;
@@ -295,7 +362,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
 
     if (selected.device) {
-      await this.connect(selected.device.serial, selected.device.name);
+      const startAppPackage = await this.pickFlexDisplayApp(selected.device);
+      if (startAppPackage === false) {
+        return;
+      }
+      await this.connect(selected.device.serial, selected.device.name, undefined, startAppPackage);
     }
   }
 
@@ -319,7 +390,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.reconnectingInternally = true;
     try {
       await this.stop("Reconnecting");
-      await this.connect(serial, name, this.forcedControlMode);
+      await this.connect(serial, name, this.forcedControlMode, this.currentStartAppPackage);
     } finally {
       this.reconnectingInternally = false;
     }
@@ -407,6 +478,79 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     });
   }
 
+  private async pickFlexDisplayApp(device: DeviceSummary): Promise<string | undefined | false> {
+    if (!this.currentStreamConfig.flexDisplay || !/^4(?:\.|$)/.test(this.config.scrcpyServerVersion)) {
+      return undefined;
+    }
+
+    const apps = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `读取 ${device.name} 的可启动 App`,
+      },
+      async () => this.listLaunchableApps(device.serial),
+    );
+
+    if (apps.length === 0) {
+      await vscode.window.showWarningMessage("没有读取到可启动 App，已取消 Flex display 连接。");
+      return false;
+    }
+
+    type AppPickItem = vscode.QuickPickItem & { app: DeviceAppSummary };
+    const selected = await vscode.window.showQuickPick<AppPickItem>(
+      apps.map((app) => ({
+        label: app.name,
+        description: app.packageName,
+        detail: app.system ? "系统应用" : "用户应用",
+        app,
+      })),
+      {
+        title: "选择要在 Flex display 中启动的 App",
+        placeHolder: "Flex display 会创建新的虚拟显示，请选择要打开的 App",
+        matchOnDescription: true,
+        matchOnDetail: true,
+      },
+    );
+
+    return selected?.app.packageName ?? false;
+  }
+
+  private parseAppList(output: string): DeviceAppSummary[] {
+    const apps: DeviceAppSummary[] = [];
+    for (const line of output.split(/\r?\n/)) {
+      const normalized = line.replace(/^\[server\]\s+\w+:\s*/, "");
+      const match = normalized.match(/^\s*([*-])\s+(.+?)\s+([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+)\s*$/);
+      if (!match) {
+        continue;
+      }
+
+      apps.push({
+        system: match[1] === "*",
+        name: match[2]!.trim(),
+        packageName: match[3]!,
+      });
+    }
+    return apps;
+  }
+
+  private async listLaunchableApps(serial: string): Promise<DeviceAppSummary[]> {
+    const adb = await this.client.createAdb({ serial });
+    const serverPath = await this.pushServerToDevice(adb, serial);
+    const output = await adb.subprocess.noneProtocol.spawnWaitText([
+      `CLASSPATH=${serverPath}`,
+      "app_process",
+      "/",
+      "com.genymobile.scrcpy.Server",
+      this.config.scrcpyServerVersion,
+      "log_level=info",
+      "list_apps=true",
+      "cleanup=false",
+    ]);
+    const apps = this.parseAppList(output);
+    this.output.appendLine(`listed ${apps.length} launchable apps for ${serial}`);
+    return apps;
+  }
+
   private async connectAddress(address: string): Promise<void> {
     const normalized = address.includes(":") ? address : `${address}:5555`;
     await this.post({
@@ -436,7 +580,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     const devices = await this.getDevices();
     const match = devices.find((device) => device.serial === normalized || device.serial === address);
     if (match) {
-      await this.connect(match.serial, match.name);
+      const startAppPackage = await this.pickFlexDisplayApp(match);
+      if (startAppPackage === false) {
+        return;
+      }
+      await this.connect(match.serial, match.name, undefined, startAppPackage);
       return;
     }
 
@@ -446,9 +594,14 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     });
   }
 
-  private async connect(serial: string, name: string, forcedMode?: "standard" | "root"): Promise<void> {
+  private async connect(
+    serial: string,
+    name: string,
+    forcedMode?: "standard" | "root",
+    startAppPackage?: string,
+  ): Promise<void> {
     if (this.connectInFlight) {
-      this.pendingConnect = { serial, name, forcedMode };
+      this.pendingConnect = { serial, name, forcedMode, startAppPackage };
       this.output.appendLine(`connect queued while another connect is active: ${serial}`);
       return;
     }
@@ -458,6 +611,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.currentSerial = serial;
     this.currentDeviceName = name;
     this.forcedControlMode = forcedMode;
+    this.currentStartAppPackage = startAppPackage;
     this.rootUpgradeScheduled = false;
     this.lastScrcpyLogs = [];
     if (this.reconnectTimer) {
@@ -530,6 +684,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         height: videoStream.height || metadataHeight,
       };
       this.videoPacketsSent = 0;
+      this.firstVideoDataPacketReceived = false;
       this.screenPowerOffPending = !!this.currentStreamConfig.screenOffOnStart;
 
       const startPayload: StreamStartPayload = {
@@ -565,7 +720,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
               break;
             }
             const data = value.data;
-            if (value.type === "data" && this.videoPacketsSent === 0) {
+            if (value.type === "configuration") {
+              this.output.appendLine(`video configuration packet received (${data.byteLength} bytes)`);
+            }
+            if (value.type === "data" && !this.firstVideoDataPacketReceived) {
+              this.firstVideoDataPacketReceived = true;
               this.output.appendLine("first video packet received");
             }
             const packet: VideoPacketPayload = {
@@ -581,6 +740,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
           reader.releaseLock();
         }
       })();
+      void this.startSelectedFlexDisplayApp();
       void this.requestDeviceScreenOffViaController("stream setup complete");
 
       scrcpyClient.exited
@@ -612,7 +772,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       const pending = this.pendingConnect;
       this.pendingConnect = undefined;
       if (pending) {
-        await this.connect(pending.serial, pending.name, pending.forcedMode);
+        await this.connect(pending.serial, pending.name, pending.forcedMode, pending.startAppPackage);
       }
     }
   }
@@ -678,7 +838,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = undefined;
       if (isIpEndpoint(serial)) {
-        await this.connect(serial, name, this.forcedControlMode);
+        await this.connect(serial, name, this.forcedControlMode, this.currentStartAppPackage);
         return;
       }
 
@@ -688,7 +848,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         this.output.appendLine(`adb reconnect ${serial} failed: ${String(error)}`);
       }
       await sleep(500);
-      await this.connect(serial, name);
+      await this.connect(serial, name, this.forcedControlMode, this.currentStartAppPackage);
     }, this.config.autoReconnectDelayMs);
   }
 
@@ -1185,6 +1345,24 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     return await adb.subprocess.noneProtocol.spawnWaitText(command);
   }
 
+  private async startSelectedFlexDisplayApp(): Promise<void> {
+    if (!this.currentStreamConfig.flexDisplay || !this.currentStartAppPackage) {
+      return;
+    }
+
+    const controller = this.scrcpyClient?.controller;
+    if (!controller) {
+      return;
+    }
+
+    try {
+      this.output.appendLine(`starting selected app on flex display: ${this.currentStartAppPackage}`);
+      await controller.startApp(this.currentStartAppPackage);
+    } catch (error) {
+      this.output.appendLine(`failed to start selected app on flex display: ${String(error)}`);
+    }
+  }
+
   private async getDisplayPowerState(
     adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
   ): Promise<"on" | "off" | "unknown"> {
@@ -1310,7 +1488,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
     try {
       await this.stop("Switching to root control");
-      await this.connect(serial, name, "root");
+      await this.connect(serial, name, "root", this.currentStartAppPackage);
     } finally {
       this.rootUpgradeScheduled = false;
     }
@@ -1392,7 +1570,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   }
 
   private createOptions(spawner: AdbNoneProtocolSpawner | undefined): AdbScrcpyOptionsLatest<true> {
-    return new AdbScrcpyOptionsLatest({
+    const isScrcpy4 = /^4(?:\.|$)/.test(this.config.scrcpyServerVersion);
+    const options = new AdbScrcpyOptionsLatest({
       scid: ScrcpyInstanceId.random(),
       video: true,
       audio: !!this.currentStreamConfig.audioEnabled,
@@ -1407,12 +1586,46 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       maxSize: this.currentStreamConfig.maxSize,
       videoBitRate: this.currentStreamConfig.videoBitRate,
       videoCodec: this.currentStreamConfig.videoCodec,
-      sendCodecMeta: true,
+      sendCodecMeta: !isScrcpy4,
       sendDeviceMeta: true,
     }, {
       version: this.config.scrcpyServerVersion,
       spawner,
     });
+
+    if (isScrcpy4) {
+      const serialize = options.serialize.bind(options);
+      options.createMediaStreamTransformer = createScrcpy4MediaStreamTransformer;
+      options.serialize = () => [
+        ...serialize().filter((arg) => !arg.startsWith("send_codec_meta=")),
+        "send_stream_meta=false",
+        ...(this.currentStreamConfig.keepActive ? ["keep_active=true"] : []),
+        ...(this.currentStreamConfig.flexDisplay ? ["new_display=", "flex_display=true"] : []),
+      ];
+    }
+
+    return options;
+  }
+
+  private async resizeFlexDisplay(width: number, height: number): Promise<void> {
+    if (!this.currentStreamConfig.flexDisplay || !/^4(?:\.|$)/.test(this.config.scrcpyServerVersion)) {
+      return;
+    }
+
+    const controller = this.scrcpyClient?.controller;
+    if (!controller) {
+      return;
+    }
+
+    const nextWidth = Math.max(1, Math.min(65535, Math.floor(width)));
+    const nextHeight = Math.max(1, Math.min(65535, Math.floor(height)));
+    const message = new Uint8Array(5);
+    message[0] = 21;
+    message[1] = nextWidth >> 8;
+    message[2] = nextWidth & 0xff;
+    message[3] = nextHeight >> 8;
+    message[4] = nextHeight & 0xff;
+    await controller.write(message);
   }
 
   private shouldRetryWithRoot(error: unknown): boolean {

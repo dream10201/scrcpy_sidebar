@@ -11,6 +11,8 @@ export interface ExtensionConfig {
   rootMode: "auto" | "always" | "never";
   screenOffOnStart: boolean;
   keepScreenAwake: boolean;
+  keepActive: boolean;
+  flexDisplay: boolean;
   powerOnOnStart: boolean;
   powerOffOnClose: boolean;
   audioEnabled: boolean;
@@ -33,6 +35,8 @@ export interface StreamConfig {
   rootMode?: "auto" | "always" | "never";
   screenOffOnStart?: boolean;
   keepScreenAwake?: boolean;
+  keepActive?: boolean;
+  flexDisplay?: boolean;
   powerOnOnStart?: boolean;
   powerOffOnClose?: boolean;
   audioEnabled?: boolean;
@@ -78,6 +82,7 @@ export type WebviewToExtensionMessage =
   | { type: "reconnect" }
   | { type: "video-ready" }
   | { type: "decoder-error"; detail: string }
+  | { type: "resize-display"; width: number; height: number }
   | { type: "key"; key: "back" | "home" | "appSwitch" | "power" }
   | { type: "keyboard-text"; text: string }
   | { type: "keyboard-key"; key: string }
