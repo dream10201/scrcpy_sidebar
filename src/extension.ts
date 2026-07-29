@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { ScrcpySidebarSession } from "./session";
 import type { ExtensionConfig, WebviewToExtensionMessage } from "./types";
 
@@ -75,6 +76,9 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     view.onDidDispose(() => {
       this.session?.dispose();
       this.session = undefined;
+      if (this.view === view) {
+        this.view = undefined;
+      }
     });
 
     view.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
@@ -133,7 +137,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
   private async renderHtml(webview: vscode.Webview): Promise<string> {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview.js"));
-    const nonce = String(Date.now());
+    const nonce = randomBytes(16).toString("base64");
     const cssUri = vscode.Uri.joinPath(this.context.extensionUri, "media", "webview.css");
     const css = await fs.readFile(cssUri.fsPath, "utf8");
     const icon = (kind: "settings" | "connect" | "back" | "home" | "tasks" | "power") => {
@@ -185,7 +189,14 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
             </div>
             <div class="screen-stage">
               <canvas id="screen" tabindex="0"></canvas>
-              <div id="overlay" class="overlay" aria-hidden="true"></div>
+              <div id="overlay" class="overlay">
+                <div class="overlay-card">
+                  <span id="overlayIcon" class="overlay-icon" aria-hidden="true">○</span>
+                  <strong id="overlayTitle">未连接设备</strong>
+                  <span id="overlayDetail" class="overlay-detail"></span>
+                  <button id="overlayActionBtn" class="primary">选择设备</button>
+                </div>
+              </div>
             </div>
             <div class="floating-actions">
               <button id="backBtn" class="icon-button" aria-label="返回">

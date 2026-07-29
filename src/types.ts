@@ -70,7 +70,6 @@ export type ExtensionToWebviewMessage =
   | { type: "stream-start"; payload: StreamStartPayload }
   | { type: "stream-stop"; detail?: string }
   | { type: "video"; packet: VideoPacketPayload }
-  | { type: "metrics"; fps: number; renderedFrames: number; skippedFrames: number }
   | { type: "error"; message: string };
 
 export type PointerPhase = "down" | "move" | "up";
@@ -85,7 +84,6 @@ export type WebviewToExtensionMessage =
   | { type: "resize-display"; width: number; height: number }
   | { type: "key"; key: "back" | "home" | "appSwitch" | "power" }
   | { type: "keyboard-text"; text: string }
-  | { type: "keyboard-key"; key: string }
   | {
       type: "keyboard-event";
       action: "down" | "up";
@@ -117,10 +115,4 @@ export type WebviewToExtensionMessage =
       height: number;
       scrollX: number;
       scrollY: number;
-    }
-  | {
-      type: "edge-swipe-back";
-      y: number;
-      width: number;
-      height: number;
     };

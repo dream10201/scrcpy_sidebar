@@ -274,9 +274,65 @@ button.danger {
   background: color-mix(in srgb, var(--bg) 72%, transparent);
   border-radius: 18px;
   pointer-events: none;
+  display: grid;
+  place-items: center;
+  padding: 12px;
 }
 
 .overlay.hidden {
+  display: none;
+}
+
+.overlay-card {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-2) 88%, transparent);
+  text-align: center;
+}
+
+.overlay-icon {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.overlay.busy .overlay-icon {
+  animation: overlay-spin 1.2s linear infinite;
+}
+
+@keyframes overlay-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.overlay-card strong {
+  font-size: 13px;
+}
+
+.overlay-detail {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.overlay-card button {
+  pointer-events: auto;
+  margin-top: 2px;
+}
+
+.overlay-card [hidden] {
   display: none;
 }
 
@@ -301,13 +357,18 @@ label {
 
 .settings-page {
   padding: 10px;
+  overflow-y: auto;
+}
+
+.page.settings-page.active {
+  display: block;
 }
 
 .settings-panel {
   width: 100%;
-  height: 100%;
-  display: grid;
-  grid-template-rows: auto auto auto 1fr;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 

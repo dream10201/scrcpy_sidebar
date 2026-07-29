@@ -21,9 +21,9 @@ import {
   DefaultServerPath,
   ScrcpyInstanceId,
   ScrcpyPointerId,
-  type ScrcpyMediaStreamPacket,
 } from "@yume-chan/scrcpy";
-import { TransformStream } from "@yume-chan/stream-extra";
+import { mapKeyboardCode } from "./keymap";
+import { createScrcpy4MediaStreamTransformer, isScrcpy4Version } from "./scrcpy4";
 import type {
   DeviceSummary,
   ExtensionConfig,
@@ -67,55 +67,6 @@ function shellEscape(argument: string): string {
 }
 
 const KeepAwakeScreenOffTimeoutMs = 24 * 60 * 60 * 1000;
-const Scrcpy4PacketFlagSession = 1n << 63n;
-const Scrcpy4PacketFlagConfig = 1n << 62n;
-const Scrcpy4PacketFlagKeyFrame = 1n << 61n;
-
-function createScrcpy4MediaStreamTransformer(): TransformStream<Uint8Array, ScrcpyMediaStreamPacket> {
-  let pending = new Uint8Array(0);
-
-  return new TransformStream<Uint8Array, ScrcpyMediaStreamPacket>({
-    transform(chunk, controller) {
-      if (pending.length) {
-        const merged = new Uint8Array(pending.length + chunk.length);
-        merged.set(pending, 0);
-        merged.set(chunk, pending.length);
-        pending = merged;
-      } else {
-        pending = new Uint8Array(chunk);
-      }
-
-      while (pending.length >= 12) {
-        const view = new DataView(pending.buffer, pending.byteOffset, pending.byteLength);
-        const ptsAndFlags = view.getBigUint64(0);
-        const packetSize = view.getUint32(8);
-        const frameEnd = 12 + packetSize;
-        if (pending.length < frameEnd) {
-          return;
-        }
-
-        const data = pending.slice(12, frameEnd);
-        pending = pending.slice(frameEnd);
-
-        if (ptsAndFlags & Scrcpy4PacketFlagSession) {
-          continue;
-        }
-
-        if (ptsAndFlags & Scrcpy4PacketFlagConfig) {
-          controller.enqueue({ type: "configuration", data });
-          continue;
-        }
-
-        controller.enqueue({
-          type: "data",
-          data,
-          keyframe: !!(ptsAndFlags & Scrcpy4PacketFlagKeyFrame),
-          pts: ptsAndFlags & ~(Scrcpy4PacketFlagSession | Scrcpy4PacketFlagConfig | Scrcpy4PacketFlagKeyFrame),
-        });
-      }
-    },
-  });
-}
 
 export class ScrcpySidebarSession implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
@@ -150,7 +101,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private webviewMessageDrainRunning = false;
   private queuedVideoMessages = 0;
   private readonly maxQueuedVideoMessages = 24;
-  private edgeSwipeInProgress = false;
   private firstVideoDataPacketReceived = false;
 
   constructor(
@@ -328,9 +278,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       case "keyboard-text":
         await this.injectKeyboardText(message.text);
         return;
-      case "keyboard-key":
-        await this.injectKeyboardKey(message.key);
-        return;
       case "keyboard-event":
         await this.injectKeyboardEvent(message);
         return;
@@ -342,9 +289,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         return;
       case "scroll":
         void this.injectScroll(message);
-        return;
-      case "edge-swipe-back":
-        await this.injectEdgeSwipeBack(message);
         return;
     }
   }
@@ -479,7 +423,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   }
 
   private async pickFlexDisplayApp(device: DeviceSummary): Promise<string | undefined | false> {
-    if (!this.currentStreamConfig.flexDisplay || !/^4(?:\.|$)/.test(this.config.scrcpyServerVersion)) {
+    if (!this.currentStreamConfig.flexDisplay || !isScrcpy4Version(this.config.scrcpyServerVersion)) {
       return undefined;
     }
 
@@ -712,9 +656,10 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       });
 
       const reader = videoStream.stream.getReader();
+      const abortSignal = this.scrcpyAbort.signal;
       this.videoLoop = (async () => {
         try {
-          while (!this.scrcpyAbort.signal.aborted) {
+          while (!abortSignal.aborted) {
             const { done, value } = await reader.read();
             if (done || !value) {
               break;
@@ -929,69 +874,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
   }
 
-  private async injectEdgeSwipeBack(message: Extract<WebviewToExtensionMessage, { type: "edge-swipe-back" }>): Promise<void> {
-    const controller = this.scrcpyClient?.controller;
-    if (!controller || this.edgeSwipeInProgress || this.isPointerDown) {
-      return;
-    }
-
-    if (!this.streamSize.width || !this.streamSize.height) {
-      return;
-    }
-
-    const startX = 1;
-    const y = Math.max(1, Math.min(this.streamSize.height - 1, Math.round(message.y)));
-    const endX = Math.max(260, Math.min(520, Math.round(this.streamSize.width * 0.42)));
-    const steps = 14;
-
-    this.edgeSwipeInProgress = true;
-    try {
-      await controller.injectTouch({
-        action: AndroidMotionEventAction.Down,
-        pointerId: ScrcpyPointerId.Finger,
-        pointerX: startX,
-        pointerY: y,
-        videoWidth: this.streamSize.width,
-        videoHeight: this.streamSize.height,
-        pressure: 1,
-        actionButton: AndroidMotionEventButton.None,
-        buttons: AndroidMotionEventButton.None,
-      });
-
-      for (let step = 1; step <= steps; step += 1) {
-        await sleep(14);
-        await controller.injectTouch({
-          action: AndroidMotionEventAction.Move,
-          pointerId: ScrcpyPointerId.Finger,
-          pointerX: Math.round(startX + ((endX - startX) * step) / steps),
-          pointerY: y,
-          videoWidth: this.streamSize.width,
-          videoHeight: this.streamSize.height,
-          pressure: 1,
-          actionButton: AndroidMotionEventButton.None,
-          buttons: AndroidMotionEventButton.None,
-        });
-      }
-
-      await sleep(20);
-      await controller.injectTouch({
-        action: AndroidMotionEventAction.Up,
-        pointerId: ScrcpyPointerId.Finger,
-        pointerX: endX,
-        pointerY: y,
-        videoWidth: this.streamSize.width,
-        videoHeight: this.streamSize.height,
-        pressure: 0,
-        actionButton: AndroidMotionEventButton.None,
-        buttons: AndroidMotionEventButton.None,
-      });
-    } catch (error) {
-      this.output.appendLine(`injectEdgeSwipeBack failed: ${String(error)}`);
-    } finally {
-      this.edgeSwipeInProgress = false;
-    }
-  }
-
   private async injectKey(key: "back" | "home" | "appSwitch" | "power"): Promise<void> {
     const controller = this.scrcpyClient?.controller;
     const serial = this.currentSerial;
@@ -1095,64 +977,12 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
   }
 
-  private async injectKeyboardKey(key: string): Promise<void> {
-    const mapping: Record<string, { android: (typeof AndroidKeyCode)[keyof typeof AndroidKeyCode]; adb: string }> = {
-      Enter: { android: AndroidKeyCode.Enter, adb: "66" },
-      Backspace: { android: AndroidKeyCode.Backspace, adb: "67" },
-      Delete: { android: AndroidKeyCode.Delete, adb: "112" },
-      Tab: { android: AndroidKeyCode.Tab, adb: "61" },
-      Escape: { android: AndroidKeyCode.Escape, adb: "111" },
-      ArrowUp: { android: AndroidKeyCode.ArrowUp, adb: "19" },
-      ArrowDown: { android: AndroidKeyCode.ArrowDown, adb: "20" },
-      ArrowLeft: { android: AndroidKeyCode.ArrowLeft, adb: "21" },
-      ArrowRight: { android: AndroidKeyCode.ArrowRight, adb: "22" },
-      Home: { android: AndroidKeyCode.Home, adb: "122" },
-      End: { android: AndroidKeyCode.End, adb: "123" },
-      PageUp: { android: AndroidKeyCode.PageUp, adb: "92" },
-      PageDown: { android: AndroidKeyCode.PageDown, adb: "93" },
-      Insert: { android: AndroidKeyCode.Insert, adb: "124" },
-      Space: { android: AndroidKeyCode.Space, adb: "62" },
-    };
-
-    const target = mapping[key];
-    if (!target) {
-      return;
-    }
-
-    const controller = this.scrcpyClient?.controller;
-    const serial = this.currentSerial;
-    if (!serial) {
-      return;
-    }
-
-    try {
-      if (!controller) {
-        throw new Error("scrcpy controller unavailable");
-      }
-      await controller.injectKeyCode({
-        action: AndroidKeyEventAction.Down,
-        keyCode: target.android,
-        repeat: 0,
-        metaState: AndroidKeyEventMeta.None,
-      });
-      await controller.injectKeyCode({
-        action: AndroidKeyEventAction.Up,
-        keyCode: target.android,
-        repeat: 0,
-        metaState: AndroidKeyEventMeta.None,
-      });
-    } catch (error) {
-      this.output.appendLine(`injectKeyboardKey failed (${key}): ${String(error)}`);
-      await this.injectKeyViaAdb(serial, target.adb);
-    }
-  }
-
   private async injectKeyboardEvent(
     message: Extract<WebviewToExtensionMessage, { type: "keyboard-event" }>,
   ): Promise<void> {
     const controller = this.scrcpyClient?.controller;
     const serial = this.currentSerial;
-    if (!serial || message.repeat) {
+    if (!serial || (message.repeat && message.action !== "down")) {
       return;
     }
 
@@ -1163,7 +993,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       (message.metaKey ? AndroidKeyEventMeta.Meta : 0)
     ) as AndroidKeyEventMeta);
 
-    const target = this.mapKeyboardCode(message.code, message.key);
+    const target = mapKeyboardCode(message.code, message.key);
     if (!target) {
       return;
     }
@@ -1175,7 +1005,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       await controller.injectKeyCode({
         action: message.action === "down" ? AndroidKeyEventAction.Down : AndroidKeyEventAction.Up,
         keyCode: target.android,
-        repeat: 0,
+        repeat: message.repeat ? 1 : 0,
         metaState,
       });
     } catch (error) {
@@ -1184,103 +1014,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         await this.injectKeyViaAdb(serial, target.adb);
       }
     }
-  }
-
-  private mapKeyboardCode(
-    code: string,
-    key: string,
-  ): { android: (typeof AndroidKeyCode)[keyof typeof AndroidKeyCode]; adb: string } | undefined {
-    const byCode: Record<string, { android: (typeof AndroidKeyCode)[keyof typeof AndroidKeyCode]; adb: string }> = {
-      Backquote: { android: AndroidKeyCode.Backquote, adb: "68" },
-      Minus: { android: AndroidKeyCode.Minus, adb: "69" },
-      Equal: { android: AndroidKeyCode.Equal, adb: "70" },
-      BracketLeft: { android: AndroidKeyCode.BracketLeft, adb: "71" },
-      BracketRight: { android: AndroidKeyCode.BracketRight, adb: "72" },
-      Backslash: { android: AndroidKeyCode.Backslash, adb: "73" },
-      Semicolon: { android: AndroidKeyCode.Semicolon, adb: "74" },
-      Quote: { android: AndroidKeyCode.Quote, adb: "75" },
-      Comma: { android: AndroidKeyCode.Comma, adb: "55" },
-      Period: { android: AndroidKeyCode.Period, adb: "56" },
-      Slash: { android: AndroidKeyCode.Slash, adb: "76" },
-      Space: { android: AndroidKeyCode.Space, adb: "62" },
-      Tab: { android: AndroidKeyCode.Tab, adb: "61" },
-      Enter: { android: AndroidKeyCode.Enter, adb: "66" },
-      NumpadEnter: { android: AndroidKeyCode.NumpadEnter, adb: "160" },
-      Backspace: { android: AndroidKeyCode.Backspace, adb: "67" },
-      Delete: { android: AndroidKeyCode.Delete, adb: "112" },
-      Escape: { android: AndroidKeyCode.Escape, adb: "111" },
-      ArrowUp: { android: AndroidKeyCode.ArrowUp, adb: "19" },
-      ArrowDown: { android: AndroidKeyCode.ArrowDown, adb: "20" },
-      ArrowLeft: { android: AndroidKeyCode.ArrowLeft, adb: "21" },
-      ArrowRight: { android: AndroidKeyCode.ArrowRight, adb: "22" },
-      Home: { android: AndroidKeyCode.Home, adb: "122" },
-      End: { android: AndroidKeyCode.End, adb: "123" },
-      PageUp: { android: AndroidKeyCode.PageUp, adb: "92" },
-      PageDown: { android: AndroidKeyCode.PageDown, adb: "93" },
-      Insert: { android: AndroidKeyCode.Insert, adb: "124" },
-      ShiftLeft: { android: AndroidKeyCode.ShiftLeft, adb: "59" },
-      ShiftRight: { android: AndroidKeyCode.ShiftRight, adb: "60" },
-      ControlLeft: { android: AndroidKeyCode.ControlLeft, adb: "113" },
-      ControlRight: { android: AndroidKeyCode.ControlRight, adb: "114" },
-      AltLeft: { android: AndroidKeyCode.AltLeft, adb: "57" },
-      AltRight: { android: AndroidKeyCode.AltRight, adb: "58" },
-      MetaLeft: { android: AndroidKeyCode.MetaLeft, adb: "117" },
-      MetaRight: { android: AndroidKeyCode.MetaRight, adb: "118" },
-      CapsLock: { android: AndroidKeyCode.CapsLock, adb: "115" },
-      ContextMenu: { android: AndroidKeyCode.ContextMenu, adb: "82" },
-      F1: { android: AndroidKeyCode.F1, adb: "131" },
-      F2: { android: AndroidKeyCode.F2, adb: "132" },
-      F3: { android: AndroidKeyCode.F3, adb: "133" },
-      F4: { android: AndroidKeyCode.F4, adb: "134" },
-      F5: { android: AndroidKeyCode.F5, adb: "135" },
-      F6: { android: AndroidKeyCode.F6, adb: "136" },
-      F7: { android: AndroidKeyCode.F7, adb: "137" },
-      F8: { android: AndroidKeyCode.F8, adb: "138" },
-      F9: { android: AndroidKeyCode.F9, adb: "139" },
-      F10: { android: AndroidKeyCode.F10, adb: "140" },
-      F11: { android: AndroidKeyCode.F11, adb: "141" },
-      F12: { android: AndroidKeyCode.F12, adb: "142" },
-      Numpad0: { android: AndroidKeyCode.Numpad0, adb: "144" },
-      Numpad1: { android: AndroidKeyCode.Numpad1, adb: "145" },
-      Numpad2: { android: AndroidKeyCode.Numpad2, adb: "146" },
-      Numpad3: { android: AndroidKeyCode.Numpad3, adb: "147" },
-      Numpad4: { android: AndroidKeyCode.Numpad4, adb: "148" },
-      Numpad5: { android: AndroidKeyCode.Numpad5, adb: "149" },
-      Numpad6: { android: AndroidKeyCode.Numpad6, adb: "150" },
-      Numpad7: { android: AndroidKeyCode.Numpad7, adb: "151" },
-      Numpad8: { android: AndroidKeyCode.Numpad8, adb: "152" },
-      Numpad9: { android: AndroidKeyCode.Numpad9, adb: "153" },
-      NumpadAdd: { android: AndroidKeyCode.NumpadAdd, adb: "157" },
-      NumpadSubtract: { android: AndroidKeyCode.NumpadSubtract, adb: "156" },
-      NumpadMultiply: { android: AndroidKeyCode.NumpadMultiply, adb: "155" },
-      NumpadDivide: { android: AndroidKeyCode.NumpadDivide, adb: "154" },
-      NumpadDecimal: { android: AndroidKeyCode.NumpadDecimal, adb: "158" },
-    };
-
-    const direct = byCode[code];
-    if (direct) {
-      return direct;
-    }
-
-    if (/^Key[A-Z]$/.test(code)) {
-      const android = AndroidKeyCode[code as keyof typeof AndroidKeyCode];
-      if (android !== undefined) {
-        return { android, adb: String(android) };
-      }
-    }
-
-    if (/^Digit[0-9]$/.test(code)) {
-      const android = AndroidKeyCode[code as keyof typeof AndroidKeyCode];
-      if (android !== undefined) {
-        return { android, adb: String(android) };
-      }
-    }
-
-    if (key === "Space") {
-      return { android: AndroidKeyCode.Space, adb: "62" };
-    }
-
-    return undefined;
   }
 
   private async injectKeyViaAdb(serial: string, keyCode: string): Promise<void> {
@@ -1570,7 +1303,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   }
 
   private createOptions(spawner: AdbNoneProtocolSpawner | undefined): AdbScrcpyOptionsLatest<true> {
-    const isScrcpy4 = /^4(?:\.|$)/.test(this.config.scrcpyServerVersion);
+    const isScrcpy4 = isScrcpy4Version(this.config.scrcpyServerVersion);
     const options = new AdbScrcpyOptionsLatest({
       scid: ScrcpyInstanceId.random(),
       video: true,
@@ -1608,7 +1341,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   }
 
   private async resizeFlexDisplay(width: number, height: number): Promise<void> {
-    if (!this.currentStreamConfig.flexDisplay || !/^4(?:\.|$)/.test(this.config.scrcpyServerVersion)) {
+    if (!this.currentStreamConfig.flexDisplay || !isScrcpy4Version(this.config.scrcpyServerVersion)) {
       return;
     }
 

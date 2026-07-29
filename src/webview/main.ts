@@ -21,6 +21,10 @@ const deviceLabel = document.querySelector<HTMLSpanElement>("#deviceLabel")!;
 const deviceSub = document.querySelector<HTMLSpanElement>("#deviceSub")!;
 const statusText = document.querySelector<HTMLDivElement>("#statusText")!;
 const overlay = document.querySelector<HTMLDivElement>("#overlay")!;
+const overlayIcon = document.querySelector<HTMLSpanElement>("#overlayIcon")!;
+const overlayTitle = document.querySelector<HTMLElement>("#overlayTitle")!;
+const overlayDetail = document.querySelector<HTMLSpanElement>("#overlayDetail")!;
+const overlayActionBtn = document.querySelector<HTMLButtonElement>("#overlayActionBtn")!;
 const metrics = document.querySelector<HTMLSpanElement>("#metrics")!;
 const detail = document.querySelector<HTMLSpanElement>("#detail")!;
 const statusBadge = document.querySelector<HTMLSpanElement>("#statusBadge")!;
@@ -58,17 +62,11 @@ const maxQueuedPackets = 12;
 let videoAspectRatio = 9 / 16;
 let firstFrameNotified = false;
 let decodedPacketCount = 0;
-let currentStatus = "idle";
 let videoBufferMs = 50;
 let lastFlexResize = { width: 0, height: 0 };
 let flexResizeTimer: number | undefined;
 let firstQueuedPacketAt = 0;
 let bufferTimer: number | undefined;
-let wheelGestureLastAt = 0;
-let wheelGestureAccumulatedX = 0;
-let wheelGestureAccumulatedY = 0;
-let wheelGestureBackTriggered = false;
-let lastWheelBackAt = 0;
 let touchpadDragPoint: { x: number; y: number } | undefined;
 let touchpadDragStartPoint: { x: number; y: number } | undefined;
 let touchpadPendingMovePoint: { x: number; y: number } | undefined;
@@ -82,10 +80,6 @@ let touchpadDragAccumulatedY = 0;
 let touchpadMomentumSuppressUntil = 0;
 let touchpadFlingInProgress = false;
 
-const wheelGestureResetMs = 180;
-const wheelBackThresholdPx = 60;
-const wheelBackVerticalRatio = 0.45;
-const wheelBackCooldownMs = 650;
 const touchpadDragEndDelayMs = 70;
 const touchpadHorizontalEndDelayMs = 28;
 const touchpadDragRestartGapMs = 140;
@@ -123,20 +117,62 @@ function post(message: WebviewToExtensionMessage): void {
   vscode.postMessage(message);
 }
 
-function setStatus(text: string, extra?: string): void {
-  currentStatus = text;
-  statusText.textContent = text;
-  detail.textContent = extra ?? "";
-  const meta =
-    text === "正在投屏" || text === "streaming" ? { icon: "●", label: "正在投屏", state: "streaming" } :
-    text === "connecting" || text === "reconnecting" || text === "elevating" ? { icon: "↻", label: text, state: "active" } :
-    text === "连接已断开" || text === "disconnected" ? { icon: "○", label: "连接已断开", state: "idle" } :
-    text === "错误" || text === "解码失败" ? { icon: "!", label: text, state: "error" } :
-    { icon: "○", label: text || "空闲", state: "idle" };
+type UiStatus =
+  | "idle"
+  | "connecting"
+  | "reconnecting"
+  | "elevating"
+  | "streaming"
+  | "disconnected"
+  | "error"
+  | "decode-error"
+  | "invalid-input";
+
+const statusMeta: Record<UiStatus, { icon: string; label: string; state: "idle" | "active" | "streaming" | "error" }> = {
+  idle: { icon: "○", label: "空闲", state: "idle" },
+  connecting: { icon: "↻", label: "连接中", state: "active" },
+  reconnecting: { icon: "↻", label: "重连中", state: "active" },
+  elevating: { icon: "↻", label: "切换 Root 控制", state: "active" },
+  streaming: { icon: "●", label: "正在投屏", state: "streaming" },
+  disconnected: { icon: "○", label: "连接已断开", state: "idle" },
+  error: { icon: "!", label: "错误", state: "error" },
+  "decode-error": { icon: "!", label: "解码失败", state: "error" },
+  "invalid-input": { icon: "!", label: "参数无效", state: "error" },
+};
+
+let currentStatus: UiStatus = "idle";
+let currentDetail = "";
+
+function normalizeStatus(status: string): UiStatus {
+  return (status in statusMeta ? status : "idle") as UiStatus;
+}
+
+function isBusyStatus(status: UiStatus): boolean {
+  return status === "streaming" || status === "connecting" || status === "reconnecting" || status === "elevating";
+}
+
+function updateOverlayCard(): void {
+  const meta = statusMeta[currentStatus];
+  overlayIcon.textContent = meta.icon;
+  overlayTitle.textContent = currentStatus === "idle" && !currentStream ? "未连接设备" : meta.label;
+  overlayDetail.textContent = currentDetail;
+  overlayDetail.hidden = !currentDetail;
+  overlayActionBtn.hidden = isBusyStatus(currentStatus);
+  overlayActionBtn.textContent = currentStatus === "idle" ? "选择设备" : "重新连接";
+  overlay.classList.toggle("busy", currentStatus !== "streaming" && isBusyStatus(currentStatus));
+}
+
+function setStatus(status: UiStatus, extra?: string): void {
+  currentStatus = status;
+  currentDetail = extra ?? "";
+  const meta = statusMeta[status];
+  statusText.textContent = meta.label;
+  detail.textContent = currentDetail;
   statusBadge.textContent = meta.icon;
   statusBadge.dataset.state = meta.state;
   statusBadge.title = meta.label;
   statusBadge.setAttribute("aria-label", meta.label);
+  updateOverlayCard();
   updateConnectButton();
 }
 
@@ -201,11 +237,7 @@ function setPage(page: "player" | "settings"): void {
 }
 
 function updateConnectButton(): void {
-  const active =
-    currentStatus === "streaming" ||
-    currentStatus === "connecting" ||
-    currentStatus === "reconnecting" ||
-    currentStatus === "elevating";
+  const active = isBusyStatus(currentStatus);
   connectBtn.dataset.state = active ? "connected" : "disconnected";
   connectBtn.setAttribute("aria-label", active ? "断开设备" : "连接设备");
   connectBtn.title = active ? "断开设备" : "连接设备";
@@ -253,7 +285,6 @@ function updateCanvasLayout(): void {
     return;
   }
 
-  const stageRatio = bounds.width / bounds.height;
   const ratio = videoAspectRatio || (9 / 16);
 
   let width = bounds.width;
@@ -337,7 +368,7 @@ async function startStream(payload: StreamStartPayload): Promise<void> {
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     setOverlayVisible(true);
-    setStatus("解码失败", detail);
+    setStatus("decode-error", detail);
     post({ type: "decoder-error", detail });
     return;
   }
@@ -355,7 +386,7 @@ async function startStream(payload: StreamStartPayload): Promise<void> {
   }
   updateCanvasLayout();
   setOverlayVisible(false);
-  setStatus("正在投屏", `${payload.serial} · ${payload.width}x${payload.height}`);
+  setStatus("streaming", `${payload.serial} · ${payload.width}x${payload.height}`);
   setMode(payload.controlMode);
 }
 
@@ -372,7 +403,7 @@ async function pumpDecoder(): Promise<void> {
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         setOverlayVisible(true);
-        setStatus("解码失败", detail);
+        setStatus("decode-error", detail);
         post({ type: "decoder-error", detail });
         disposeDecoder();
         return;
@@ -486,39 +517,6 @@ function normalizeWheelDelta(event: WheelEvent): { deltaX: number; deltaY: numbe
   return { deltaX, deltaY };
 }
 
-function shouldTriggerBackFromWheel(deltaX: number, deltaY: number): boolean {
-  if (touchpadDragPoint) {
-    return false;
-  }
-
-  const now = performance.now();
-  if (now - wheelGestureLastAt > wheelGestureResetMs) {
-    wheelGestureAccumulatedX = 0;
-    wheelGestureAccumulatedY = 0;
-    wheelGestureBackTriggered = false;
-  }
-
-  wheelGestureLastAt = now;
-  wheelGestureAccumulatedX += deltaX;
-  wheelGestureAccumulatedY += deltaY;
-
-  const rightSwipeDistance = wheelGestureAccumulatedX;
-  const verticalDistance = Math.abs(wheelGestureAccumulatedY);
-  const isHorizontalIntent = rightSwipeDistance > 0 && verticalDistance <= rightSwipeDistance * wheelBackVerticalRatio;
-  if (
-    wheelGestureBackTriggered ||
-    !isHorizontalIntent ||
-    rightSwipeDistance < wheelBackThresholdPx ||
-    now - lastWheelBackAt < wheelBackCooldownMs
-  ) {
-    return false;
-  }
-
-  wheelGestureBackTriggered = true;
-  lastWheelBackAt = now;
-  return true;
-}
-
 function clampCanvasPoint(point: { x: number; y: number }): { x: number; y: number } {
   return {
     x: Math.max(0, Math.min(canvas.width, point.x)),
@@ -548,9 +546,6 @@ function runTouchpadHorizontalFling(startPoint: { x: number; y: number }, direct
   finishTouchpadDrag();
   touchpadFlingInProgress = true;
   touchpadMomentumSuppressUntil = performance.now() + touchpadFlingSuppressMs;
-  wheelGestureAccumulatedX = 0;
-  wheelGestureAccumulatedY = 0;
-  wheelGestureBackTriggered = false;
   touchpadDragLastAt = 0;
 
   const directionSign = Math.sign(direction || 1);
@@ -837,14 +832,6 @@ canvas.addEventListener("wheel", (event) => {
     return;
   }
 
-  if (
-    !touchpadDragPoint &&
-    Math.abs(touchpadDragAccumulatedX + deltaX) > Math.abs(touchpadDragAccumulatedY + deltaY) * touchpadHorizontalIntentRatio
-  ) {
-    moveTouchpadDrag(point, deltaX, deltaY);
-    return;
-  }
-
   moveTouchpadDrag(point, deltaX, deltaY);
 }, { passive: false });
 
@@ -904,12 +891,14 @@ document.querySelector<HTMLButtonElement>("#settingsBtn")!.addEventListener("cli
 });
 
 connectBtn.addEventListener("click", () => {
-  const active =
-    currentStatus === "streaming" ||
-    currentStatus === "connecting" ||
-    currentStatus === "reconnecting" ||
-    currentStatus === "elevating";
-  post({ type: active ? "disconnect" : "select-device" });
+  post({ type: isBusyStatus(currentStatus) ? "disconnect" : "select-device" });
+});
+
+overlayActionBtn.addEventListener("click", () => {
+  if (isBusyStatus(currentStatus)) {
+    return;
+  }
+  post({ type: currentStatus === "idle" ? "select-device" : "reconnect" });
 });
 
 document.querySelector<HTMLButtonElement>("#backToPlayerBtn")!.addEventListener("click", () => {
@@ -942,7 +931,7 @@ document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click"
   const videoBitRate = readNumberInput(bitrateInput, 1000000);
   const nextVideoBufferMs = readNumberInput(videoBufferInput, 0);
   if (maxFps === undefined || maxSize === undefined || videoBitRate === undefined || nextVideoBufferMs === undefined) {
-    setStatus("参数无效", "请检查播放设置里的数字输入");
+    setStatus("invalid-input", "请检查播放设置里的数字输入");
     return;
   }
 
@@ -969,7 +958,7 @@ window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessag
   const message = event.data;
   switch (message.type) {
     case "state":
-      setStatus(message.status, message.detail);
+      setStatus(normalizeStatus(message.status), message.detail);
       setOverlayVisible(message.status !== "streaming");
       setMode(message.mode);
       return;
@@ -983,7 +972,7 @@ window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessag
       disposeDecoder();
       currentStream = undefined;
       setOverlayVisible(true);
-      setStatus("连接已断开", message.detail);
+      setStatus("disconnected", message.detail);
       return;
     case "video":
       enqueueVideo(message.packet);
@@ -1005,10 +994,7 @@ window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessag
       return;
     case "error":
       setOverlayVisible(true);
-      setStatus("错误", message.message);
-      return;
-    case "metrics":
-      metrics.textContent = `FPS: ${message.fps} · Rendered: ${message.renderedFrames} · Skipped: ${message.skippedFrames}`;
+      setStatus("error", message.message);
       return;
   }
 });
