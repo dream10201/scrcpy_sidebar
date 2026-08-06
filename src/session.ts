@@ -102,6 +102,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private queuedVideoMessages = 0;
   private readonly maxQueuedVideoMessages = 24;
   private firstVideoDataPacketReceived = false;
+  private miuiAdbInputPromptShown = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -597,6 +598,9 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
       const { scrcpyClient, controlMode } = await this.startScrcpyWithFallback(adb, serverPath, preferredMode, fallbackMode);
       this.activeControlMode = controlMode;
+      if (controlMode === "root") {
+        void this.ensureMiuiAdbInputEnabled(adb);
+      }
       this.scrcpyClient = scrcpyClient;
       void (async () => {
         const outputReader = scrcpyClient.output.getReader();
@@ -1279,6 +1283,53 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         shellEscape(commandLine),
       ], signal);
     });
+  }
+
+  // MIUI revokes shell's INJECT_EVENTS unless "USB debugging (Security settings)" is enabled.
+  // The toggle is backed by persist.security.adbinput; setting it via root avoids the
+  // SIM + Mi account requirement of the UI switch. Takes effect after a device reboot,
+  // after which standard (non-root) control works.
+  private async ensureMiuiAdbInputEnabled(
+    adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
+  ): Promise<void> {
+    try {
+      const miuiVersion = (await adb.subprocess.noneProtocol.spawnWaitText(["getprop", "ro.miui.ui.version.name"])).trim();
+      if (!miuiVersion) {
+        return;
+      }
+
+      const current = (await adb.subprocess.noneProtocol.spawnWaitText(["getprop", "persist.security.adbinput"])).trim();
+      if (current === "1") {
+        return;
+      }
+
+      await this.runDeviceCommand(adb, ["setprop", "persist.security.adbinput", "1"], true);
+      const applied = (await adb.subprocess.noneProtocol.spawnWaitText(["getprop", "persist.security.adbinput"])).trim();
+      if (applied !== "1") {
+        this.output.appendLine("failed to enable persist.security.adbinput via root");
+        return;
+      }
+
+      this.output.appendLine("enabled MIUI USB debugging (Security settings) via persist.security.adbinput=1");
+      if (this.miuiAdbInputPromptShown) {
+        return;
+      }
+      this.miuiAdbInputPromptShown = true;
+      const serial = this.currentSerial;
+      void vscode.window
+        .showInformationMessage(
+          "已自动开启 MIUI「USB 调试（安全设置）」，重启手机后无需 Root 即可控制。",
+          "立即重启设备",
+        )
+        .then((choice) => {
+          if (choice === "立即重启设备" && serial) {
+            this.output.appendLine(`rebooting ${serial} to apply persist.security.adbinput`);
+            execFile("adb", ["-s", serial, "reboot"]);
+          }
+        });
+    } catch (error) {
+      this.output.appendLine(`ensureMiuiAdbInputEnabled failed: ${String(error)}`);
+    }
   }
 
   private async checkRoot(adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>): Promise<boolean> {
