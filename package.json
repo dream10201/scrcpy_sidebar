@@ -159,7 +159,8 @@
         "scrcpySidebar.powerOnOnStart": {
           "type": "boolean",
           "default": false,
-          "description": "Request the physical device screen to wake before streaming starts."
+          "description": "Request the physical device screen to wake before streaming starts.",
+          "deprecationMessage": "No longer used. The extension wakes the device automatically when the display is off."
         },
         "scrcpySidebar.powerOffOnClose": {
           "type": "boolean",

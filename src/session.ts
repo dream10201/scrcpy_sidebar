@@ -311,7 +311,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
   async reconnect(): Promise<void> {
     if (!this.currentSerial) {
-      await this.refreshDevices();
+      await this.promptAndConnect();
       return;
     }
 
@@ -675,6 +675,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         }
       })();
       void this.startSelectedFlexDisplayApp();
+      this.drainAudioStream(scrcpyClient);
 
       scrcpyClient.exited
         .then(() => {
@@ -1079,6 +1080,39 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     return await adb.subprocess.noneProtocol.spawnWaitText(command);
   }
 
+  // Browser-side audio playback is not implemented yet. The audio socket must still be
+  // consumed, otherwise ADB flow control back-pressures the server's audio thread.
+  private drainAudioStream(scrcpyClient: AdbScrcpyClient<AdbScrcpyOptionsLatest<true>>): void {
+    const audioStream = scrcpyClient.audioStream;
+    if (!audioStream) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        const metadata = await audioStream;
+        if (metadata.type !== "success") {
+          this.output.appendLine(`audio stream unavailable on device: ${metadata.type}`);
+          return;
+        }
+        this.output.appendLine("audio stream opened (playback not implemented, draining)");
+        const reader = metadata.stream.getReader();
+        try {
+          while (true) {
+            const { done } = await reader.read();
+            if (done) {
+              break;
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      } catch (error) {
+        this.output.appendLine(`audio stream error: ${String(error)}`);
+      }
+    })();
+  }
+
   private async startSelectedFlexDisplayApp(): Promise<void> {
     if (!this.currentStreamConfig.flexDisplay || !this.currentStartAppPackage) {
       return;
@@ -1124,17 +1158,15 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       return;
     }
 
-    if (!this.currentStreamConfig.screenOffOnStart) {
-      return;
-    }
-
+    // Wake whenever the display is off (regardless of screenOffOnStart): some ROMs return a
+    // black capture if scrcpy starts while the physical screen is off. With screenOffOnStart
+    // the post-first-frame power-off turns it back off; without it the screen simply stays on.
+    // During internal reconnects dumpsys may still report ON while the old server's forced-off
+    // is being cleaned up, so wake unconditionally there.
     const displayState = await this.getDisplayPowerState(adb);
     if (displayState !== "off" && !this.reconnectingInternally) {
       return;
     }
-
-    // Some ROMs return a black capture if scrcpy starts while the physical screen is already off.
-    // Wake the device briefly, then let the post-first-frame power-off path turn it back off.
     this.output.appendLine("waking device briefly so capture can start");
     try {
       await this.runDeviceCommand(adb, ["input", "keyevent", "KEYCODE_WAKEUP"]);

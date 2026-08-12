@@ -90,7 +90,20 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     await this.session?.initialize();
   }
 
+  // Commands can run while the sidebar view has never been resolved; focus it and wait
+  // for resolveWebviewView so the session can be created.
+  private async revealView(): Promise<void> {
+    if (this.view) {
+      return;
+    }
+    await vscode.commands.executeCommand("scrcpySidebar.view.focus");
+    for (let attempt = 0; attempt < 20 && !this.view; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
   async selectDevice(): Promise<void> {
+    await this.revealView();
     await this.ensureSession();
     await this.session?.promptAndConnect();
   }
@@ -100,6 +113,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   }
 
   async reconnect(): Promise<void> {
+    await this.revealView();
     await this.ensureSession();
     await this.session?.handleMessage({ type: "reconnect" });
   }
@@ -320,7 +334,9 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     output,
     provider,
-    vscode.window.registerWebviewViewProvider("scrcpySidebar.view", provider),
+    vscode.window.registerWebviewViewProvider("scrcpySidebar.view", provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       void provider.handleConfigurationChange(event);
     }),

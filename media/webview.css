@@ -109,7 +109,8 @@ body {
 }
 
 .header-actions {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .status-chip {
@@ -123,6 +124,13 @@ body {
   border: 1px solid var(--border);
   background: var(--panel-2);
   white-space: nowrap;
+  max-width: 120px;
+  min-width: 0;
+}
+
+.status-chip > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-chip[hidden] {
