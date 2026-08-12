@@ -27,9 +27,10 @@ const overlayDetail = document.querySelector<HTMLSpanElement>("#overlayDetail")!
 const overlayActionBtn = document.querySelector<HTMLButtonElement>("#overlayActionBtn")!;
 const metrics = document.querySelector<HTMLSpanElement>("#metrics")!;
 const detail = document.querySelector<HTMLSpanElement>("#detail")!;
-const statusBadge = document.querySelector<HTMLSpanElement>("#statusBadge")!;
-const modeBadge = document.querySelector<HTMLSpanElement>("#modeBadge")!;
-const screenStateBadge = document.querySelector<HTMLSpanElement>("#screenStateBadge")!;
+const statusChip = document.querySelector<HTMLSpanElement>("#statusChip")!;
+const statusChipText = document.querySelector<HTMLSpanElement>("#statusChipText")!;
+const screenChip = document.querySelector<HTMLSpanElement>("#screenChip")!;
+const screenChipText = document.querySelector<HTMLSpanElement>("#screenChipText")!;
 const connectBtn = document.querySelector<HTMLButtonElement>("#connectBtn")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 const screenStage = document.querySelector<HTMLDivElement>(".screen-stage")!;
@@ -129,19 +130,27 @@ type UiStatus =
   | "invalid-input";
 
 const statusMeta: Record<UiStatus, { icon: string; label: string; state: "idle" | "active" | "streaming" | "error" }> = {
-  idle: { icon: "○", label: "空闲", state: "idle" },
+  idle: { icon: "○", label: "未连接", state: "idle" },
   connecting: { icon: "↻", label: "连接中", state: "active" },
   reconnecting: { icon: "↻", label: "重连中", state: "active" },
-  elevating: { icon: "↻", label: "切换 Root 控制", state: "active" },
-  streaming: { icon: "●", label: "正在投屏", state: "streaming" },
-  disconnected: { icon: "○", label: "连接已断开", state: "idle" },
+  elevating: { icon: "↻", label: "切换 Root", state: "active" },
+  streaming: { icon: "●", label: "投屏中", state: "streaming" },
+  disconnected: { icon: "○", label: "已断开", state: "idle" },
   error: { icon: "!", label: "错误", state: "error" },
   "decode-error": { icon: "!", label: "解码失败", state: "error" },
   "invalid-input": { icon: "!", label: "参数无效", state: "error" },
 };
 
+const modeLabels: Record<"standard" | "root" | "pending" | "view-only", string> = {
+  standard: "标准",
+  root: "Root",
+  "view-only": "仅观看",
+  pending: "",
+};
+
 let currentStatus: UiStatus = "idle";
 let currentDetail = "";
+let currentMode: "standard" | "root" | "pending" | "view-only" = "pending";
 
 function normalizeStatus(status: string): UiStatus {
   return (status in statusMeta ? status : "idle") as UiStatus;
@@ -162,16 +171,23 @@ function updateOverlayCard(): void {
   overlay.classList.toggle("busy", currentStatus !== "streaming" && isBusyStatus(currentStatus));
 }
 
+function renderStatusChip(): void {
+  const meta = statusMeta[currentStatus];
+  const modeSuffix = currentStatus === "streaming" && modeLabels[currentMode] ? ` · ${modeLabels[currentMode]}` : "";
+  const text = `${meta.label}${modeSuffix}`;
+  statusChipText.textContent = text;
+  statusChip.dataset.state = meta.state;
+  statusChip.title = currentDetail ? `${text} — ${currentDetail}` : text;
+  statusChip.setAttribute("aria-label", statusChip.title);
+}
+
 function setStatus(status: UiStatus, extra?: string): void {
   currentStatus = status;
   currentDetail = extra ?? "";
   const meta = statusMeta[status];
   statusText.textContent = meta.label;
   detail.textContent = currentDetail;
-  statusBadge.textContent = meta.icon;
-  statusBadge.dataset.state = meta.state;
-  statusBadge.title = meta.label;
-  statusBadge.setAttribute("aria-label", meta.label);
+  renderStatusChip();
   updateOverlayCard();
   updateConnectButton();
 }
@@ -204,26 +220,20 @@ function readNumberInput(input: HTMLInputElement, min: number): number | undefin
 }
 
 function setMode(mode?: "standard" | "root" | "pending" | "view-only"): void {
-  const meta =
-    mode === "standard" ? { icon: "S", label: "标准控制" } :
-    mode === "root" ? { icon: "#", label: "Root 控制" } :
-    mode === "view-only" ? { icon: "👁", label: "仅观看" } :
-    { icon: "…", label: "控制模式待定" };
-  modeBadge.textContent = meta.icon;
-  modeBadge.dataset.mode = mode ?? "pending";
-  modeBadge.title = meta.label;
-  modeBadge.setAttribute("aria-label", meta.label);
+  currentMode = mode ?? "pending";
+  renderStatusChip();
 }
 
 function setDeviceScreenState(state: "on" | "off" | "unknown"): void {
   const meta =
-    state === "on" ? { icon: "☀", label: "真机亮屏" } :
-    state === "off" ? { icon: "◼", label: "真机黑屏" } :
-    { icon: "?", label: "真机屏幕状态未知" };
-  screenStateBadge.dataset.state = state;
-  screenStateBadge.textContent = meta.icon;
-  screenStateBadge.title = meta.label;
-  screenStateBadge.setAttribute("aria-label", meta.label);
+    state === "on" ? { label: "亮屏", title: "真机屏幕已点亮" } :
+    state === "off" ? { label: "已熄屏", title: "真机屏幕已熄灭(操作照常生效)" } :
+    { label: "", title: "" };
+  screenChip.hidden = state === "unknown";
+  screenChip.dataset.state = state;
+  screenChipText.textContent = meta.label;
+  screenChip.title = meta.title;
+  screenChip.setAttribute("aria-label", meta.title);
 }
 
 function setOverlayVisible(visible: boolean): void {

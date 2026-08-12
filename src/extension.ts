@@ -116,10 +116,10 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
 
-    const nextConfig = getConfig();
-    if (!this.session) {
+    if (!this.session || this.session.isPersistingConfig) {
       return;
     }
+    const nextConfig = getConfig();
 
     const needsSessionReset = await this.session.applyConfig(nextConfig);
     if (!needsSessionReset) {
@@ -176,9 +176,13 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
                 <span id="deviceSub">Waiting for adb devices</span>
               </div>
               <div class="header-actions">
-                <span class="badge icon-badge status" id="statusBadge" aria-label="空闲" title="空闲">○</span>
-                <span class="badge icon-badge mode" id="modeBadge" aria-label="控制模式待定" title="控制模式待定">…</span>
-                <span class="badge icon-badge screen" id="screenStateBadge" aria-label="真机屏幕状态未知" title="真机屏幕状态未知">?</span>
+                <span class="status-chip" id="statusChip" data-state="idle" title="未连接">
+                  <span class="status-dot" aria-hidden="true"></span>
+                  <span id="statusChipText">未连接</span>
+                </span>
+                <span class="status-chip screen" id="screenChip" data-state="unknown" hidden>
+                  <span id="screenChipText"></span>
+                </span>
                 <button id="connectBtn" class="icon-button subtle" aria-label="连接设备" title="连接设备">
                   ${icon("connect")}
                 </button>
@@ -287,7 +291,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
                 <span>启用真机音频</span>
               </label>
             </div>
-            <p class="hint-block">更多性能、编码和权限参数请在 VS Code / code-server 设置中搜索 <code>scrcpySidebar</code>。</p>
+            <p class="hint-block">勾选「连接后真机黑屏」后,任何操作唤醒了屏幕都会被自动重新熄屏,电源键仅切换设备唤醒/休眠;「阻止真机休眠」仅在设备充电时生效。更多性能、编码和权限参数请在 VS Code / code-server 设置中搜索 <code>scrcpySidebar</code>。</p>
           </div>
 
           <div class="settings-section utility-actions">

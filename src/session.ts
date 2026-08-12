@@ -68,6 +68,31 @@ function shellEscape(argument: string): string {
 
 const KeepAwakeScreenOffTimeoutMs = 24 * 60 * 60 * 1000;
 
+const StreamSettingKeys = [
+  "maxFps",
+  "maxSize",
+  "videoBitRate",
+  "videoCodec",
+  "videoBufferMs",
+  "rootMode",
+  "screenOffOnStart",
+  "keepScreenAwake",
+  "keepActive",
+  "flexDisplay",
+  "powerOnOnStart",
+  "powerOffOnClose",
+  "audioEnabled",
+  "audioCodec",
+] as const;
+
+function pickStreamConfig(config: ExtensionConfig): StreamConfig {
+  const picked: Partial<StreamConfig> = {};
+  for (const key of StreamSettingKeys) {
+    (picked as Record<string, unknown>)[key] = config[key];
+  }
+  return picked as StreamConfig;
+}
+
 export class ScrcpySidebarSession implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly client: AdbServerClient;
@@ -94,7 +119,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private connectInFlight = false;
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root"; startAppPackage?: string };
   private screenPowerOffPending = false;
-  private screenPowerOffTimer?: NodeJS.Timeout;
+  private displayOffEnforceTimer?: NodeJS.Timeout;
+  private persistingConfig = false;
   private reconnectingInternally = false;
   private codecFallbackScheduled = false;
   private webviewMessageQueue: ExtensionToWebviewMessage[] = [];
@@ -118,22 +144,12 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         port: config.adbPort,
       }),
     );
-    this.currentStreamConfig = {
-      maxFps: config.maxFps,
-      maxSize: config.maxSize,
-      videoBitRate: config.videoBitRate,
-      videoCodec: config.videoCodec,
-      videoBufferMs: config.videoBufferMs,
-      screenOffOnStart: config.screenOffOnStart,
-      keepScreenAwake: config.keepScreenAwake,
-      keepActive: config.keepActive,
-      flexDisplay: config.flexDisplay,
-      powerOnOnStart: config.powerOnOnStart,
-      powerOffOnClose: config.powerOffOnClose,
-      audioEnabled: config.audioEnabled,
-      audioCodec: config.audioCodec,
-    };
+    this.currentStreamConfig = pickStreamConfig(config);
     this.currentRootMode = config.rootMode;
+  }
+
+  get isPersistingConfig(): boolean {
+    return this.persistingConfig;
   }
 
   async initialize(): Promise<void> {
@@ -198,41 +214,10 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     const shouldReconnect =
       !requiresSessionReset &&
       this.scrcpyClient !== undefined &&
-      (
-        this.config.maxFps !== nextConfig.maxFps ||
-        this.config.maxSize !== nextConfig.maxSize ||
-        this.config.videoBitRate !== nextConfig.videoBitRate ||
-        this.config.videoCodec !== nextConfig.videoCodec ||
-        this.config.videoBufferMs !== nextConfig.videoBufferMs ||
-        this.config.rootMode !== nextConfig.rootMode ||
-        this.config.screenOffOnStart !== nextConfig.screenOffOnStart ||
-        this.config.keepScreenAwake !== nextConfig.keepScreenAwake ||
-        this.config.keepActive !== nextConfig.keepActive ||
-        this.config.flexDisplay !== nextConfig.flexDisplay ||
-        this.config.powerOnOnStart !== nextConfig.powerOnOnStart ||
-        this.config.powerOffOnClose !== nextConfig.powerOffOnClose ||
-        this.config.audioEnabled !== nextConfig.audioEnabled ||
-        this.config.audioCodec !== nextConfig.audioCodec
-      );
+      StreamSettingKeys.some((key) => this.config[key] !== nextConfig[key]);
 
     this.config = nextConfig;
-    this.currentStreamConfig = {
-      ...this.currentStreamConfig,
-      maxFps: nextConfig.maxFps,
-      maxSize: nextConfig.maxSize,
-      videoBitRate: nextConfig.videoBitRate,
-      videoCodec: nextConfig.videoCodec,
-      videoBufferMs: nextConfig.videoBufferMs,
-      screenOffOnStart: nextConfig.screenOffOnStart,
-      keepScreenAwake: nextConfig.keepScreenAwake,
-      keepActive: nextConfig.keepActive,
-      flexDisplay: nextConfig.flexDisplay,
-      powerOnOnStart: nextConfig.powerOnOnStart,
-      powerOffOnClose: nextConfig.powerOffOnClose,
-      audioEnabled: nextConfig.audioEnabled,
-      audioCodec: nextConfig.audioCodec,
-      rootMode: nextConfig.rootMode,
-    };
+    this.currentStreamConfig = pickStreamConfig(nextConfig);
     this.currentRootMode = nextConfig.rootMode;
     void this.syncConfigToWebview();
     if (shouldReconnect) {
@@ -690,7 +675,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         }
       })();
       void this.startSelectedFlexDisplayApp();
-      void this.requestDeviceScreenOffViaController("stream setup complete");
 
       scrcpyClient.exited
         .then(() => {
@@ -739,9 +723,9 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.scrcpyAbort.abort();
     this.scrcpyAbort = new AbortController();
     this.screenPowerOffPending = false;
-    if (this.screenPowerOffTimer) {
-      clearTimeout(this.screenPowerOffTimer);
-      this.screenPowerOffTimer = undefined;
+    if (this.displayOffEnforceTimer) {
+      clearTimeout(this.displayOffEnforceTimer);
+      this.displayOffEnforceTimer = undefined;
     }
 
     if (this.videoLoop) {
@@ -896,7 +880,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
     if (key === "power") {
       if (this.currentStreamConfig.screenOffOnStart) {
-        await this.restoreRemoteScreenWithoutLeavingDeviceOn();
+        await this.togglePowerKeepingDisplayOff();
         return;
       }
 
@@ -931,35 +915,48 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
   }
 
-  private async restoreRemoteScreenWithoutLeavingDeviceOn(): Promise<void> {
+  // In screenOffOnStart mode the power button toggles the device between awake and
+  // asleep (a normal POWER key press), but the physical display must never light up:
+  // force it off right after, on top of the display-on log enforcement.
+  private async togglePowerKeepingDisplayOff(): Promise<void> {
     const controller = this.scrcpyClient?.controller;
     const serial = this.currentSerial;
     if (!serial) {
       return;
     }
 
-    if (!controller) {
-      await this.injectKeyViaAdb(serial, "224");
-      return;
+    this.output.appendLine("toggling device power while keeping physical display blank");
+    try {
+      if (!controller) {
+        throw new Error("scrcpy controller unavailable");
+      }
+      await controller.injectKeyCode({
+        action: AndroidKeyEventAction.Down,
+        keyCode: AndroidKeyCode.Power,
+        repeat: 0,
+        metaState: AndroidKeyEventMeta.None,
+      });
+      await controller.injectKeyCode({
+        action: AndroidKeyEventAction.Up,
+        keyCode: AndroidKeyCode.Power,
+        repeat: 0,
+        metaState: AndroidKeyEventMeta.None,
+      });
+    } catch (error) {
+      this.output.appendLine(`power toggle failed: ${String(error)}`);
+      await this.injectKeyViaAdb(serial, "26");
     }
 
-    this.output.appendLine("restoring remote screen while keeping physical display blank");
+    const currentController = this.scrcpyClient?.controller;
+    if (!currentController) {
+      return;
+    }
+    await sleep(300);
     try {
-      await controller.backOrScreenOn(AndroidKeyEventAction.Down);
-      await sleep(260);
-      await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
+      await currentController.setScreenPowerMode(AndroidScreenPowerMode.Off);
       await this.syncDeviceScreenState("off");
     } catch (error) {
-      this.output.appendLine(`restore remote screen failed: ${String(error)}`);
-      try {
-        await this.injectKeyViaAdb(serial, "224");
-        await sleep(260);
-        await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
-        await this.syncDeviceScreenState("off");
-      } catch (fallbackError) {
-        this.output.appendLine(`restore remote screen fallback failed: ${String(fallbackError)}`);
-        await this.syncDeviceScreenState("unknown");
-      }
+      this.output.appendLine(`forcing display off after power toggle failed: ${String(error)}`);
     }
   }
 
@@ -1105,9 +1102,13 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   ): Promise<"on" | "off" | "unknown"> {
     try {
       const output = await this.runDeviceCommand(adb, ["dumpsys", "display"]);
-      const match = output.match(/Display State=(ON|OFF)/);
+      // Field name and casing vary across Android versions/ROMs.
+      const match =
+        output.match(/Display State=(ON|OFF)/i) ??
+        output.match(/mScreenState=(ON|OFF)/i) ??
+        output.match(/Display Power: state=(ON|OFF)/i);
       if (match) {
-        return match[1] === "ON" ? "on" : "off";
+        return match[1]!.toUpperCase() === "ON" ? "on" : "off";
       }
     } catch (error) {
       this.output.appendLine(`getDisplayPowerState failed: ${String(error)}`);
@@ -1156,34 +1157,49 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       return;
     }
 
+    const controller = this.scrcpyClient?.controller;
+    if (!controller) {
+      return;
+    }
+
+    this.screenPowerOffPending = false;
+    this.output.appendLine(`requesting display power off via scrcpy controller (${reason})`);
+    try {
+      await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
+      await this.syncDeviceScreenState("off");
+    } catch (error) {
+      this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
+      await this.syncDeviceScreenState("unknown");
+    }
+  }
+
+  // With screenOffOnStart the physical display must stay dark no matter what wakes it
+  // (touch input, notifications, the power toggle): whenever scrcpy reports the display
+  // turning on, force it back off shortly after.
+  private scheduleDisplayOffEnforcement(): void {
+    if (!this.currentStreamConfig.screenOffOnStart || this.screenPowerOffPending || this.displayOffEnforceTimer) {
+      return;
+    }
+
     const scrcpyClient = this.scrcpyClient;
     const controller = scrcpyClient?.controller;
     if (!scrcpyClient || !controller) {
       return;
     }
 
-    if (this.screenPowerOffTimer) {
-      return;
-    }
-
-    this.output.appendLine(`requesting display power off via scrcpy controller (${reason})`);
-    this.screenPowerOffTimer = setTimeout(() => {
-      this.screenPowerOffTimer = undefined;
-      if (!this.screenPowerOffPending || this.scrcpyClient !== scrcpyClient) {
+    this.displayOffEnforceTimer = setTimeout(() => {
+      this.displayOffEnforceTimer = undefined;
+      if (this.scrcpyClient !== scrcpyClient || !this.currentStreamConfig.screenOffOnStart) {
         return;
       }
 
-      this.screenPowerOffPending = false;
+      this.output.appendLine("display woke up, forcing it back off");
       void controller.setScreenPowerMode(AndroidScreenPowerMode.Off)
-        .then(async () => {
-          this.output.appendLine("screen off command sent via scrcpy controller");
-          await this.syncDeviceScreenState("off");
-        })
+        .then(() => this.syncDeviceScreenState("off"))
         .catch((error) => {
-          this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
-          void this.syncDeviceScreenState("unknown");
+          this.output.appendLine(`forcing display off failed: ${String(error)}`);
         });
-    }, 0);
+    }, 250);
   }
 
   private handleScrcpyLogLine(line: string): void {
@@ -1191,6 +1207,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       void this.syncDeviceScreenState("off");
     } else if (line.includes("Device display turned on")) {
       void this.syncDeviceScreenState("on");
+      this.scheduleDisplayOffEnforcement();
     }
 
     if (
@@ -1526,17 +1543,26 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
   private isRootUnavailableError(error: unknown): boolean {
     const text = String(error);
-    return text.includes("su") || text.includes("not found") || text.includes("permission denied");
+    return /\bsu\b.*(not found|inaccessible|no such file)/i.test(text) || /permission denied/i.test(text);
   }
 
+  // Writes all keys while configuration-change events are suppressed, then applies the
+  // merged config once; per-key change events would otherwise trigger one reconnect each.
   private async persistConfig(config: Partial<StreamConfig>): Promise<void> {
     const settings = vscode.workspace.getConfiguration("scrcpySidebar");
-    const entries = Object.entries(config) as Array<[keyof StreamConfig, StreamConfig[keyof StreamConfig]]>;
-    for (const [key, value] of entries) {
-      if (value === undefined) {
-        continue;
+    const entries = (Object.entries(config) as Array<[keyof StreamConfig, StreamConfig[keyof StreamConfig]]>)
+      .filter(([, value]) => value !== undefined);
+
+    this.persistingConfig = true;
+    try {
+      for (const [key, value] of entries) {
+        await settings.update(key, value, vscode.ConfigurationTarget.Global);
       }
-      await settings.update(key, value, vscode.ConfigurationTarget.Global);
+    } finally {
+      this.persistingConfig = false;
     }
+
+    const nextConfig = { ...this.config, ...Object.fromEntries(entries) } as ExtensionConfig;
+    await this.applyConfig(nextConfig);
   }
 }
