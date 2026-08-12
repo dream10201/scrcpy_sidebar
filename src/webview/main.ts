@@ -80,6 +80,7 @@ let touchpadDragAccumulatedX = 0;
 let touchpadDragAccumulatedY = 0;
 let touchpadMomentumSuppressUntil = 0;
 let touchpadFlingInProgress = false;
+let touchpadLastGestureEndAt = 0;
 
 const touchpadDragEndDelayMs = 70;
 const touchpadHorizontalEndDelayMs = 28;
@@ -87,6 +88,8 @@ const touchpadDragRestartGapMs = 140;
 const touchpadDragStartThresholdPx = 10;
 const touchpadMaxMoveStepPx = 42;
 const touchpadMomentumTailThresholdPx = 6;
+const touchpadMomentumTailWindowMs = 450;
+const touchpadHorizontalAccumulateGapMs = 140;
 const touchpadMomentumSuppressMs = 220;
 const touchpadFlingThresholdPx = 48;
 const touchpadFlingVerticalRatio = 0.35;
@@ -618,6 +621,7 @@ function runTouchpadHorizontalFling(startPoint: { x: number; y: number }, direct
     if (!point) {
       sendSyntheticPointer("up", end);
       touchpadFlingInProgress = false;
+      touchpadLastGestureEndAt = performance.now();
       resetTouchpadDragState();
       return;
     }
@@ -718,6 +722,7 @@ function finishTouchpadDrag(): void {
   flushTouchpadMove();
   sendSyntheticPointer("up", touchpadDragPoint);
   resetTouchpadDragState();
+  touchpadLastGestureEndAt = performance.now();
   if (horizontalIntent) {
     touchpadMomentumSuppressUntil = performance.now() + touchpadMomentumSuppressMs;
   }
@@ -728,8 +733,16 @@ function shouldIgnoreTouchpadMomentumTail(deltaX: number, deltaY: number): boole
     return false;
   }
 
-  if (touchpadFlingInProgress || performance.now() <= touchpadMomentumSuppressUntil) {
+  const now = performance.now();
+  if (touchpadFlingInProgress || now <= touchpadMomentumSuppressUntil) {
     return Math.abs(deltaX) > Math.abs(deltaY) * 0.35;
+  }
+
+  // Small horizontal deltas are leftover macOS momentum only right after a gesture
+  // ended; at any other time they are the start of a slow deliberate swipe and must
+  // be allowed to accumulate toward the horizontal fling threshold.
+  if (now - touchpadLastGestureEndAt > touchpadMomentumTailWindowMs) {
+    return false;
   }
 
   const mostlyHorizontal = Math.abs(deltaX) > Math.abs(deltaY) * 1.2;
@@ -764,7 +777,9 @@ function moveTouchpadDrag(startPoint: { x: number; y: number }, deltaX: number, 
     if (touchpadDragEndTimer !== undefined) {
       window.clearTimeout(touchpadDragEndTimer);
     }
-    touchpadDragEndTimer = window.setTimeout(finishTouchpadDrag, touchpadHorizontalEndDelayMs);
+    // Accumulating toward the fling threshold without dragging: keep the accumulator
+    // alive across normal wheel-event gaps, otherwise medium-speed swipes never reach it.
+    touchpadDragEndTimer = window.setTimeout(finishTouchpadDrag, touchpadHorizontalAccumulateGapMs);
     return;
   }
 
