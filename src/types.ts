@@ -17,6 +17,7 @@ export interface ExtensionConfig {
   powerOffOnClose: boolean;
   audioEnabled: boolean;
   audioCodec: "opus" | "aac";
+  adaptiveQuality: boolean;
 }
 
 export interface DeviceSummary {
@@ -41,6 +42,7 @@ export interface StreamConfig {
   powerOffOnClose?: boolean;
   audioEnabled?: boolean;
   audioCodec?: "opus" | "aac";
+  adaptiveQuality?: boolean;
 }
 
 export interface StreamStartPayload {
@@ -79,6 +81,7 @@ export type CodecSupport = Record<"h264" | "h265" | "av1", boolean>;
 export type WebviewToExtensionMessage =
   | { type: "ready" }
   | { type: "codec-support"; codecs: CodecSupport }
+  | { type: "congestion"; queuedPackets: number; bufferedMs: number }
   | { type: "select-device" }
   | { type: "disconnect" }
   | { type: "reconnect" }

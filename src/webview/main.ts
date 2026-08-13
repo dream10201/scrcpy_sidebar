@@ -49,6 +49,14 @@ const keepActiveInput = document.querySelector<HTMLInputElement>("#keepActiveInp
 const flexDisplayInput = document.querySelector<HTMLInputElement>("#flexDisplayInput")!;
 const powerOffOnCloseInput = document.querySelector<HTMLInputElement>("#powerOffOnCloseInput")!;
 const audioEnabledInput = document.querySelector<HTMLInputElement>("#audioEnabledInput")!;
+const adaptiveInput = document.querySelector<HTMLInputElement>("#adaptiveInput")!;
+const presetButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(".preset-btn"));
+
+const qualityPresets: Record<string, { maxFps: number; maxSize: number; videoBitRate: number; videoBufferMs: number }> = {
+  mobile: { maxFps: 24, maxSize: 960, videoBitRate: 1800000, videoBufferMs: 150 },
+  remote: { maxFps: 30, maxSize: 1080, videoBitRate: 3000000, videoBufferMs: 80 },
+  lan: { maxFps: 30, maxSize: 1280, videoBitRate: 6000000, videoBufferMs: 20 },
+};
 
 let decoder: WebCodecsVideoDecoder | undefined;
 let currentStream: StreamStartPayload | undefined;
@@ -209,6 +217,21 @@ function setConfigInputs(config: StreamStartPayload["config"]): void {
   flexDisplayInput.checked = config.flexDisplay ?? false;
   powerOffOnCloseInput.checked = config.powerOffOnClose ?? true;
   audioEnabledInput.checked = config.audioEnabled ?? false;
+  adaptiveInput.checked = config.adaptiveQuality ?? true;
+  updatePresetHighlight();
+}
+
+function updatePresetHighlight(): void {
+  for (const button of presetButtons) {
+    const preset = qualityPresets[button.dataset.preset ?? ""];
+    const active =
+      !!preset &&
+      Number(fpsInput.value) === preset.maxFps &&
+      Number(sizeInput.value) === preset.maxSize &&
+      Number(bitrateInput.value) === preset.videoBitRate &&
+      Number(videoBufferInput.value) === preset.videoBufferMs;
+    button.classList.toggle("is-active", active);
+  }
 }
 
 function readNumberInput(input: HTMLInputElement, min: number): number | undefined {
@@ -988,7 +1011,7 @@ document.querySelector<HTMLButtonElement>("#powerBtn")!.addEventListener("click"
   post({ type: "key", key: "power" });
 });
 
-document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click", () => {
+function applySettings(): void {
   const maxFps = readNumberInput(fpsInput, 0);
   const maxSize = readNumberInput(sizeInput, 0);
   const videoBitRate = readNumberInput(bitrateInput, 1000000);
@@ -998,6 +1021,7 @@ document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click"
     return;
   }
 
+  updatePresetHighlight();
   post({
     type: "apply-config",
     config: {
@@ -1013,9 +1037,26 @@ document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click"
       flexDisplay: flexDisplayInput.checked,
       powerOffOnClose: powerOffOnCloseInput.checked,
       audioEnabled: audioEnabledInput.checked,
+      adaptiveQuality: adaptiveInput.checked,
     },
   });
-});
+}
+
+document.querySelector<HTMLButtonElement>("#applyBtn")!.addEventListener("click", applySettings);
+
+for (const button of presetButtons) {
+  button.addEventListener("click", () => {
+    const preset = qualityPresets[button.dataset.preset ?? ""];
+    if (!preset) {
+      return;
+    }
+    fpsInput.value = String(preset.maxFps);
+    sizeInput.value = String(preset.maxSize);
+    bitrateInput.value = String(preset.videoBitRate);
+    videoBufferInput.value = String(preset.videoBufferMs);
+    applySettings();
+  });
+}
 
 window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessage>) => {
   const message = event.data;
@@ -1087,6 +1128,32 @@ async function probeCodecSupport(): Promise<void> {
   ]);
   post({ type: "codec-support", codecs: { h264, h265, av1 } });
 }
+
+// Sustained queue backlog means the transport or decoder cannot keep up with the
+// current stream settings; report it so the extension can step quality down.
+let congestionTicks = 0;
+let lastCongestionReportAt = 0;
+window.setInterval(() => {
+  if (!decoder || !currentStream) {
+    congestionTicks = 0;
+    return;
+  }
+  congestionTicks = packetQueue.length >= 8 ? congestionTicks + 1 : 0;
+  if (congestionTicks < 3) {
+    return;
+  }
+  congestionTicks = 0;
+  const now = Date.now();
+  if (now - lastCongestionReportAt < 30000) {
+    return;
+  }
+  lastCongestionReportAt = now;
+  post({
+    type: "congestion",
+    queuedPackets: packetQueue.length,
+    bufferedMs: Math.round(performance.now() - firstQueuedPacketAt),
+  });
+}, 1000);
 
 post({ type: "ready" });
 void probeCodecSupport();

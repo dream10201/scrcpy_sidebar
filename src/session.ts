@@ -99,7 +99,19 @@ const StreamSettingKeys = [
   "powerOffOnClose",
   "audioEnabled",
   "audioCodec",
+  "adaptiveQuality",
 ] as const;
+
+// Quality rungs for adaptive downgrade, lowest first. Downgrades reconnect the
+// stream, so steps are coarse and only triggered on sustained congestion.
+const AdaptiveQualityLadder: ReadonlyArray<
+  Pick<StreamConfig, "maxFps" | "maxSize" | "videoBitRate" | "videoBufferMs">
+> = [
+  { maxFps: 15, maxSize: 800, videoBitRate: 1000000, videoBufferMs: 200 },
+  { maxFps: 24, maxSize: 960, videoBitRate: 1800000, videoBufferMs: 150 },
+  { maxFps: 30, maxSize: 1080, videoBitRate: 3000000, videoBufferMs: 80 },
+  { maxFps: 30, maxSize: 1280, videoBitRate: 6000000, videoBufferMs: 20 },
+];
 
 function pickStreamConfig(config: ExtensionConfig): StreamConfig {
   const picked: Partial<StreamConfig> = {};
@@ -134,6 +146,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private lastScrcpyLogs: string[] = [];
   private webviewCodecSupport?: CodecSupport;
   private codecFallbackNote?: string;
+  private lastAdaptiveDowngradeAt = 0;
   private connectInFlight = false;
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root"; startAppPackage?: string };
   private screenPowerOffPending = false;
@@ -257,6 +270,9 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         this.output.appendLine(
           `webview codec support: h264=${message.codecs.h264} h265=${message.codecs.h265} av1=${message.codecs.av1}`,
         );
+        return;
+      case "congestion":
+        await this.handleCongestion(message.queuedPackets, message.bufferedMs);
         return;
       case "select-device":
         await this.promptAndConnect();
@@ -1302,6 +1318,45 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     } finally {
       this.rootUpgradeScheduled = false;
     }
+  }
+
+  private async handleCongestion(queuedPackets: number, bufferedMs: number): Promise<void> {
+    if (!this.currentStreamConfig.adaptiveQuality || !this.scrcpyClient || this.connectInFlight) {
+      return;
+    }
+    const now = Date.now();
+    if (now - this.lastAdaptiveDowngradeAt < 20000) {
+      return;
+    }
+
+    const currentBitRate = this.currentStreamConfig.videoBitRate;
+    let nextRung: (typeof AdaptiveQualityLadder)[number] | undefined;
+    for (let i = AdaptiveQualityLadder.length - 1; i >= 0; i -= 1) {
+      if (AdaptiveQualityLadder[i]!.videoBitRate < currentBitRate) {
+        nextRung = AdaptiveQualityLadder[i];
+        break;
+      }
+    }
+    if (!nextRung) {
+      this.output.appendLine(
+        `congestion reported (queue=${queuedPackets}, buffered=${bufferedMs}ms) but already at lowest quality rung`,
+      );
+      return;
+    }
+
+    this.lastAdaptiveDowngradeAt = now;
+    const summary = `${nextRung.maxSize}px@${nextRung.maxFps} · ${(nextRung.videoBitRate / 1000000).toFixed(1)}Mbps`;
+    this.output.appendLine(
+      `congestion detected (queue=${queuedPackets}, buffered=${bufferedMs}ms), downgrading stream to ${summary}`,
+    );
+    this.currentStreamConfig = { ...this.currentStreamConfig, ...nextRung };
+    await this.post({
+      type: "state",
+      status: "reconnecting",
+      detail: `网络拥塞，已自动降级到 ${summary}`,
+      mode: this.activeControlMode,
+    });
+    await this.reconnect();
   }
 
   private async handleDecoderError(detail: string): Promise<void> {

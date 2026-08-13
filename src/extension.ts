@@ -25,6 +25,7 @@ function getConfig(): ExtensionConfig {
     powerOffOnClose: config.get("powerOffOnClose", true),
     audioEnabled: config.get("audioEnabled", false),
     audioCodec: config.get("audioCodec", "aac"),
+    adaptiveQuality: config.get("adaptiveQuality", true),
   };
 }
 
@@ -248,6 +249,23 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
           </div>
 
           <div class="settings-section">
+            <div class="preset-heading">
+              <strong>画质预设</strong>
+              <span class="mini">按网络环境一键应用</span>
+            </div>
+            <div class="preset-row">
+              <button class="preset-btn" data-preset="mobile">移动网络·省流</button>
+              <button class="preset-btn" data-preset="remote">远程·均衡</button>
+              <button class="preset-btn" data-preset="lan">局域网·高清</button>
+            </div>
+            <label class="checkbox-row">
+              <input id="adaptiveInput" type="checkbox" checked />
+              <span>网络拥塞时自动降低画质</span>
+            </label>
+          </div>
+
+          <details class="settings-section advanced-settings">
+            <summary>高级参数</summary>
             <div class="settings-grid">
               <label>FPS
                 <input id="fpsInput" type="number" min="0" step="1" value="30" />
@@ -276,7 +294,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
                 </select>
               </label>
             </div>
-          </div>
+          </details>
 
           <div class="settings-section">
             <div class="settings-grid compact">

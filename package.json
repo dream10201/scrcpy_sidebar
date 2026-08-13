@@ -167,6 +167,11 @@
           "default": true,
           "description": "Turn off the physical device screen when the session closes."
         },
+        "scrcpySidebar.adaptiveQuality": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically step down FPS/size/bitrate and reconnect when sustained transport or decode congestion is detected."
+        },
         "scrcpySidebar.audioEnabled": {
           "type": "boolean",
           "default": false,
