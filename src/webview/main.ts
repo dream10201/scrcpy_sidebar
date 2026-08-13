@@ -455,18 +455,17 @@ function enqueueVideo(packet: VideoPacketPayload): void {
     firstQueuedPacketAt = performance.now();
   }
 
-  if (packetQueue.length >= maxQueuedPackets) {
-    if (packet.type === "data" && !packet.keyframe) {
-      droppedPackets += 1;
-      return;
-    }
-
-    for (let i = 0; i < packetQueue.length - 1; i += 1) {
-      const queued = packetQueue[i];
-      if (queued?.type === "data" && !queued.keyframe) {
+  // Delta frames reference each other: dropping one corrupts every frame until
+  // the next keyframe (black screen with ghost regions on movement). The only
+  // safe catch-up point is a keyframe, which resets the decoder references —
+  // when one arrives on an overflowing queue, everything older can be skipped.
+  // Without a keyframe the queue must keep all packets; the decoder skips
+  // rendering (framesSkipped) to catch up instead.
+  if (packetQueue.length >= maxQueuedPackets && packet.type === "data" && packet.keyframe) {
+    for (let i = packetQueue.length - 1; i >= 0; i -= 1) {
+      if (packetQueue[i]?.type === "data") {
         packetQueue.splice(i, 1);
         droppedPackets += 1;
-        break;
       }
     }
   }
