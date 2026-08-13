@@ -54,6 +54,7 @@ body {
   height: 100%;
   overflow: hidden;
   background: var(--bg);
+  container-type: inline-size;
 }
 
 .screen-shell {
@@ -111,6 +112,11 @@ body {
 .header-actions {
   flex: 0 1 auto;
   min-width: 0;
+  gap: 6px;
+}
+
+.header-actions .icon-button {
+  flex: 0 0 auto;
 }
 
 .status-chip {
@@ -174,6 +180,30 @@ body {
 
 .status-chip.screen[data-state="on"] {
   color: #ffd36a;
+}
+
+/* Narrow sidebar: drop header items by priority instead of squeezing them all. */
+@container (max-width: 380px) {
+  #deviceSub {
+    display: none;
+  }
+}
+
+@container (max-width: 300px) {
+  .status-chip.screen {
+    display: none;
+  }
+}
+
+@container (max-width: 230px) {
+  #statusChipText {
+    display: none;
+  }
+
+  .status-chip {
+    gap: 0;
+    padding: 0 7px;
+  }
 }
 
 .screen-stage {

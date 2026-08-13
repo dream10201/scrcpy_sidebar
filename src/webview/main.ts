@@ -366,7 +366,9 @@ async function startStream(payload: StreamStartPayload): Promise<void> {
   disposeDecoder();
   currentStream = payload;
   deviceLabel.textContent = payload.deviceName;
-  deviceSub.textContent = `${payload.serial} · ${payload.width}×${payload.height}`;
+  deviceLabel.title = `${payload.deviceName} · ${payload.serial}`;
+  deviceSub.textContent =
+    payload.width > 0 ? `${payload.serial} · ${payload.width}×${payload.height}` : payload.serial;
   setConfigInputs(payload.config);
 
   try {
@@ -391,6 +393,7 @@ async function startStream(payload: StreamStartPayload): Promise<void> {
     canvas.height = height;
     videoAspectRatio = width / height;
     canvas.style.aspectRatio = `${width} / ${height}`;
+    deviceSub.textContent = `${payload.serial} · ${width}×${height}`;
     updateCanvasLayout();
   });
   if (payload.width && payload.height) {
@@ -1060,6 +1063,33 @@ window.addEventListener("message", (event: MessageEvent<ExtensionToWebviewMessag
   }
 });
 
+// Report which codecs this webview's WebCodecs can decode so the extension can
+// avoid starting the server with an undecodable codec (e.g. H.265 without HEVC support).
+async function probeCodecSupport(): Promise<void> {
+  const probe = async (codec: string): Promise<boolean> => {
+    try {
+      if (typeof VideoDecoder === "undefined") {
+        return false;
+      }
+      const result = await VideoDecoder.isConfigSupported({
+        codec,
+        codedWidth: 1280,
+        codedHeight: 720,
+      });
+      return result.supported === true;
+    } catch {
+      return false;
+    }
+  };
+  const [h264, h265, av1] = await Promise.all([
+    probe("avc1.42E01F"),
+    probe("hev1.1.6.L120.90"),
+    probe("av01.0.05M.08"),
+  ]);
+  post({ type: "codec-support", codecs: { h264, h265, av1 } });
+}
+
 post({ type: "ready" });
+void probeCodecSupport();
 updateConnectButton();
 setDeviceScreenState("unknown");

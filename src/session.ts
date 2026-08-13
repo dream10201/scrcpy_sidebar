@@ -25,6 +25,7 @@ import {
 import { mapKeyboardCode } from "./keymap";
 import { createScrcpy4MediaStreamTransformer, isScrcpy4Version } from "./scrcpy4";
 import type {
+  CodecSupport,
   DeviceSummary,
   ExtensionConfig,
   ExtensionToWebviewMessage,
@@ -49,7 +50,22 @@ function isIpEndpoint(value: string): boolean {
 }
 
 function toSummary(device: AdbServerClientType.Device): DeviceSummary {
-  const label = [device.model, device.device, device.product].filter(Boolean).join(" / ");
+  // model/device/product are often near-duplicates (e.g. BLA_AL00 / HWBLA / BLA-AL00);
+  // keep only parts that are distinct after normalizing separators.
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const part of [device.model, device.device, device.product]) {
+    if (!part) {
+      continue;
+    }
+    const key = part.toLowerCase().replace(/[-_\s]/g, "");
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    parts.push(part);
+  }
+  const label = parts.join(" / ");
   return {
     serial: device.serial,
     state: device.state,
@@ -116,6 +132,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private forcedControlMode?: "standard" | "root";
   private rootUpgradeScheduled = false;
   private lastScrcpyLogs: string[] = [];
+  private webviewCodecSupport?: CodecSupport;
+  private codecFallbackNote?: string;
   private connectInFlight = false;
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root"; startAppPackage?: string };
   private screenPowerOffPending = false;
@@ -233,6 +251,12 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         await this.syncConfigToWebview();
         await this.syncDeviceScreenState("unknown");
         await this.refreshDevices();
+        return;
+      case "codec-support":
+        this.webviewCodecSupport = message.codecs;
+        this.output.appendLine(
+          `webview codec support: h264=${message.codecs.h264} h265=${message.codecs.h265} av1=${message.codecs.av1}`,
+        );
         return;
       case "select-device":
         await this.promptAndConnect();
@@ -636,7 +660,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       await this.post({
         type: "state",
         status: "streaming",
-        detail: `${name} · ${serial}`,
+        detail: this.codecFallbackNote ? `${name} · ${serial} · ${this.codecFallbackNote}` : `${name} · ${serial}`,
         mode: controlMode,
       });
 
@@ -1402,6 +1426,20 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     return rootAvailable;
   }
 
+  // Prefer the configured codec, but drop to h264 when the webview reported it
+  // cannot decode it. Keeps the user's preference intact for environments that can.
+  private resolveVideoCodec(): "h264" | "h265" | "av1" {
+    const preferred = this.currentStreamConfig.videoCodec;
+    const support = this.webviewCodecSupport;
+    this.codecFallbackNote = undefined;
+    if (preferred === "h264" || !support || support[preferred]) {
+      return preferred;
+    }
+    this.codecFallbackNote = `${preferred === "h265" ? "H.265" : "AV1"} 不受当前环境支持，已回退 H.264`;
+    this.output.appendLine(`webview cannot decode ${preferred}, starting stream with h264 instead`);
+    return "h264";
+  }
+
   private createOptions(spawner: AdbNoneProtocolSpawner | undefined): AdbScrcpyOptionsLatest<true> {
     const isScrcpy4 = isScrcpy4Version(this.config.scrcpyServerVersion);
     const options = new AdbScrcpyOptionsLatest({
@@ -1418,7 +1456,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       maxFps: this.currentStreamConfig.maxFps,
       maxSize: this.currentStreamConfig.maxSize,
       videoBitRate: this.currentStreamConfig.videoBitRate,
-      videoCodec: this.currentStreamConfig.videoCodec,
+      videoCodec: this.resolveVideoCodec(),
       sendCodecMeta: !isScrcpy4,
       sendDeviceMeta: true,
     }, {

@@ -88,19 +88,19 @@
         },
         "scrcpySidebar.maxFps": {
           "type": "number",
-          "default": 15,
+          "default": 30,
           "minimum": 0,
           "description": "Default maximum FPS. 0 lets scrcpy choose."
         },
         "scrcpySidebar.maxSize": {
           "type": "number",
-          "default": 960,
+          "default": 1280,
           "minimum": 0,
           "description": "Default maximum video size. 0 keeps original size."
         },
         "scrcpySidebar.videoBitRate": {
           "type": "number",
-          "default": 2000000,
+          "default": 4000000,
           "minimum": 1000000,
           "description": "Default scrcpy video bitrate."
         },
@@ -116,7 +116,7 @@
         },
         "scrcpySidebar.videoBufferMs": {
           "type": "number",
-          "default": 50,
+          "default": 20,
           "minimum": 0,
           "description": "Client-side video buffer in milliseconds before decoding. 0 minimizes latency; higher values smooth unstable transport."
         },

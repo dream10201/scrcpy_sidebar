@@ -74,8 +74,11 @@ export type ExtensionToWebviewMessage =
 
 export type PointerPhase = "down" | "move" | "up";
 
+export type CodecSupport = Record<"h264" | "h265" | "av1", boolean>;
+
 export type WebviewToExtensionMessage =
   | { type: "ready" }
+  | { type: "codec-support"; codecs: CodecSupport }
   | { type: "select-device" }
   | { type: "disconnect" }
   | { type: "reconnect" }

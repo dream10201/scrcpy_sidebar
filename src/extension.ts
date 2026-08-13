@@ -9,11 +9,11 @@ function getConfig(): ExtensionConfig {
   return {
     adbHost: config.get("adbHost", "127.0.0.1"),
     adbPort: config.get("adbPort", 5037),
-    maxFps: config.get("maxFps", 15),
-    maxSize: config.get("maxSize", 960),
-    videoBitRate: config.get("videoBitRate", 2000000),
+    maxFps: config.get("maxFps", 30),
+    maxSize: config.get("maxSize", 1280),
+    videoBitRate: config.get("videoBitRate", 4000000),
     videoCodec: config.get("videoCodec", "h264"),
-    videoBufferMs: config.get("videoBufferMs", 50),
+    videoBufferMs: config.get("videoBufferMs", 20),
     autoReconnectDelayMs: config.get("autoReconnectDelayMs", 3000),
     scrcpyServerVersion: config.get("scrcpyServerVersion", "4.0"),
     rootMode: config.get("rootMode", "auto"),
@@ -250,16 +250,16 @@ class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
           <div class="settings-section">
             <div class="settings-grid">
               <label>FPS
-                <input id="fpsInput" type="number" min="0" step="1" value="15" />
+                <input id="fpsInput" type="number" min="0" step="1" value="30" />
               </label>
               <label>尺寸
-                <input id="sizeInput" type="number" min="0" step="100" value="960" />
+                <input id="sizeInput" type="number" min="0" step="100" value="1280" />
               </label>
               <label>码率
-                <input id="bitrateInput" type="number" min="1000000" step="500000" value="2000000" />
+                <input id="bitrateInput" type="number" min="1000000" step="500000" value="4000000" />
               </label>
               <label>缓冲(ms)
-                <input id="videoBufferInput" type="number" min="0" step="10" value="50" />
+                <input id="videoBufferInput" type="number" min="0" step="10" value="20" />
               </label>
               <label>编码
                 <select id="codecInput">
