@@ -555,37 +555,6 @@ function normalizeWheelDelta(event: WheelEvent): { deltaX: number; deltaY: numbe
   return { deltaX, deltaY };
 }
 
-// Discrete mouse wheels report whole notches: LINE/PAGE delta mode, or in pixel mode a
-// single-axis delta that is a multiple of 100 (Chromium) or 120 (Windows convention).
-// Trackpads stream small fractional two-axis deltas and never match this.
-function isDiscreteWheelEvent(event: WheelEvent): boolean {
-  if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) {
-    return true;
-  }
-
-  const absX = Math.abs(event.deltaX);
-  const absY = Math.abs(event.deltaY);
-  const single = (absX < 0.001) !== (absY < 0.001);
-  if (!single) {
-    return false;
-  }
-
-  const magnitude = Math.max(absX, absY);
-  return magnitude >= 100 && (magnitude % 100 < 0.001 || magnitude % 120 < 0.001);
-}
-
-function sendNativeScroll(point: { x: number; y: number }, deltaX: number, deltaY: number): void {
-  post({
-    type: "scroll",
-    x: point.x,
-    y: point.y,
-    width: canvas.width,
-    height: canvas.height,
-    scrollX: -deltaX / 100,
-    scrollY: -deltaY / 100,
-  });
-}
-
 function clampCanvasPoint(point: { x: number; y: number }): { x: number; y: number } {
   return {
     x: Math.max(0, Math.min(canvas.width, point.x)),
@@ -904,11 +873,6 @@ canvas.addEventListener("wheel", (event) => {
 
   event.preventDefault();
   canvas.focus();
-  if (isDiscreteWheelEvent(event) && !touchpadDragPoint && !touchpadFlingInProgress) {
-    sendNativeScroll(point, deltaX, deltaY);
-    return;
-  }
-
   if (shouldIgnoreTouchpadMomentumTail(deltaX, deltaY)) {
     return;
   }
