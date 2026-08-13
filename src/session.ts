@@ -1626,11 +1626,15 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
   private async post(message: ExtensionToWebviewMessage): Promise<void> {
     if (message.type === "video") {
-      if (this.queuedVideoMessages >= this.maxQueuedVideoMessages) {
-        if (message.packet.type === "data" && !message.packet.keyframe) {
-          return;
-        }
-        this.dropOldestQueuedDeltaFrame();
+      // Dropping any delta frame corrupts decoding until the next keyframe, so an
+      // overflowing queue may only be trimmed when a keyframe arrives: it resets
+      // the decoder references, making every older data packet safe to skip.
+      if (
+        this.queuedVideoMessages >= this.maxQueuedVideoMessages &&
+        message.packet.type === "data" &&
+        message.packet.keyframe
+      ) {
+        this.dropQueuedVideoDataFrames();
       }
       this.queuedVideoMessages += 1;
     }
@@ -1656,13 +1660,18 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
   }
 
-  private dropOldestQueuedDeltaFrame(): void {
-    const index = this.webviewMessageQueue.findIndex((item) =>
-      item.type === "video" && item.packet.type === "data" && !item.packet.keyframe,
-    );
-    if (index >= 0) {
-      this.webviewMessageQueue.splice(index, 1);
-      this.queuedVideoMessages = Math.max(0, this.queuedVideoMessages - 1);
+  private dropQueuedVideoDataFrames(): void {
+    let dropped = 0;
+    for (let i = this.webviewMessageQueue.length - 1; i >= 0; i -= 1) {
+      const item = this.webviewMessageQueue[i];
+      if (item?.type === "video" && item.packet.type === "data") {
+        this.webviewMessageQueue.splice(i, 1);
+        this.queuedVideoMessages = Math.max(0, this.queuedVideoMessages - 1);
+        dropped += 1;
+      }
+    }
+    if (dropped > 0) {
+      this.output.appendLine(`webview post queue congested; skipped ${dropped} stale frames at keyframe boundary`);
     }
   }
 
