@@ -172,6 +172,11 @@
           "default": true,
           "description": "Automatically step down FPS/size/bitrate and reconnect when sustained transport or decode congestion is detected."
         },
+        "scrcpySidebar.uhidKeyboard": {
+          "type": "boolean",
+          "default": true,
+          "description": "Emulate a hardware (UHID) keyboard on the device so typing does not open the on-screen IME. Also sets show_ime_with_hard_keyboard=0 on the device."
+        },
         "scrcpySidebar.audioEnabled": {
           "type": "boolean",
           "default": false,

@@ -935,8 +935,24 @@ function handleKeyboardEvent(event: KeyboardEvent, action: "down" | "up"): void 
     return;
   }
 
+  // Paste host clipboard on Ctrl/Cmd+V or Shift+Insert; the extension sets the
+  // device clipboard and pastes there, so the key itself must not go through.
+  const primaryModifier = event.ctrlKey || event.metaKey;
+  if (
+    (primaryModifier && !event.altKey && !event.shiftKey && event.code === "KeyV") ||
+    (event.shiftKey && !primaryModifier && !event.altKey && event.code === "Insert")
+  ) {
+    event.preventDefault();
+    if (action === "down" && !event.repeat) {
+      post({ type: "clipboard-paste" });
+    }
+    return;
+  }
+
+  const uhidEnabled = currentStream.config.uhidKeyboard !== false;
   const special = specialKeyboardMap[event.key];
   const isPlainText =
+    !uhidEnabled &&
     action === "down" &&
     !event.ctrlKey &&
     !event.altKey &&
@@ -970,6 +986,13 @@ canvas.addEventListener("keydown", (event) => {
 
 canvas.addEventListener("keyup", (event) => {
   handleKeyboardEvent(event, "up");
+});
+
+// Release all UHID keys when focus leaves the canvas so nothing stays "held".
+canvas.addEventListener("blur", () => {
+  if (currentStream) {
+    post({ type: "keyboard-reset" });
+  }
 });
 
 document.querySelector<HTMLButtonElement>("#settingsBtn")!.addEventListener("click", () => {

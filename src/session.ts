@@ -22,6 +22,7 @@ import {
   ScrcpyInstanceId,
   ScrcpyPointerId,
 } from "@yume-chan/scrcpy";
+import { HidKeyboard, HidKeyboardDescriptor, UHidKeyboardId } from "./hid-keyboard";
 import { mapKeyboardCode } from "./keymap";
 import { createScrcpy4MediaStreamTransformer, isScrcpy4Version } from "./scrcpy4";
 import type {
@@ -100,6 +101,7 @@ const StreamSettingKeys = [
   "audioEnabled",
   "audioCodec",
   "adaptiveQuality",
+  "uhidKeyboard",
 ] as const;
 
 // Quality rungs for adaptive downgrade, lowest first. Downgrades reconnect the
@@ -160,6 +162,8 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private readonly maxQueuedVideoMessages = 24;
   private firstVideoDataPacketReceived = false;
   private miuiAdbInputPromptShown = false;
+  private hidKeyboard?: HidKeyboard;
+  private lastSyncedClipboardText?: string;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -306,6 +310,12 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         return;
       case "keyboard-event":
         await this.injectKeyboardEvent(message);
+        return;
+      case "keyboard-reset":
+        this.resetHidKeyboard();
+        return;
+      case "clipboard-paste":
+        await this.pasteFromHostClipboard();
         return;
       case "apply-config":
         await this.persistConfig(message.config);
@@ -627,6 +637,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         void this.ensureMiuiAdbInputEnabled(adb);
       }
       this.scrcpyClient = scrcpyClient;
+      this.hidKeyboard = undefined;
+      if (this.currentStreamConfig.uhidKeyboard !== false) {
+        void this.setupUhidKeyboard(adb, scrcpyClient);
+      }
+      this.watchDeviceClipboard(scrcpyClient);
       void (async () => {
         const outputReader = scrcpyClient.output.getReader();
         try {
@@ -760,6 +775,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       }
       this.scrcpyClient = undefined;
     }
+    this.hidKeyboard = undefined;
 
     this.scrcpyAbort.abort();
     this.scrcpyAbort = new AbortController();
@@ -1001,6 +1017,103 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     }
   }
 
+  // Register a UHID hardware keyboard on the device. With a hardware keyboard
+  // present and show_ime_with_hard_keyboard=0, Android keeps the soft IME
+  // hidden while typing.
+  private async setupUhidKeyboard(
+    adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
+    scrcpyClient: AdbScrcpyClient<AdbScrcpyOptionsLatest<true>>,
+  ): Promise<void> {
+    const controller = scrcpyClient.controller;
+    if (!controller) {
+      return;
+    }
+
+    try {
+      await controller.uHidCreate({
+        id: UHidKeyboardId,
+        vendorId: 0,
+        productId: 0,
+        name: "scrcpy-sidebar",
+        data: HidKeyboardDescriptor,
+      });
+      if (this.scrcpyClient !== scrcpyClient) {
+        return;
+      }
+      this.hidKeyboard = new HidKeyboard();
+      this.output.appendLine("UHID keyboard registered");
+    } catch (error) {
+      this.output.appendLine(`UHID keyboard create failed, falling back to key injection: ${String(error)}`);
+      return;
+    }
+
+    try {
+      const current = (await this.runDeviceCommand(adb, ["settings", "get", "secure", "show_ime_with_hard_keyboard"])).trim();
+      if (current !== "0") {
+        await this.runDeviceCommand(adb, ["settings", "put", "secure", "show_ime_with_hard_keyboard", "0"]);
+        this.output.appendLine(`disabled soft IME with hardware keyboard (show_ime_with_hard_keyboard ${current} -> 0)`);
+      }
+    } catch (error) {
+      this.output.appendLine(`show_ime_with_hard_keyboard update failed: ${String(error)}`);
+    }
+  }
+
+  private resetHidKeyboard(): void {
+    const controller = this.scrcpyClient?.controller;
+    const hid = this.hidKeyboard;
+    if (!controller || !hid) {
+      return;
+    }
+    void controller.uHidInput({ id: UHidKeyboardId, data: hid.reset() }).catch((error) => {
+      this.output.appendLine(`UHID keyboard reset failed: ${String(error)}`);
+    });
+  }
+
+  private watchDeviceClipboard(scrcpyClient: AdbScrcpyClient<AdbScrcpyOptionsLatest<true>>): void {
+    const stream = scrcpyClient.clipboard;
+    if (!stream) {
+      return;
+    }
+    void (async () => {
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || this.scrcpyClient !== scrcpyClient) {
+            break;
+          }
+          if (value && value !== this.lastSyncedClipboardText) {
+            this.lastSyncedClipboardText = value;
+            await vscode.env.clipboard.writeText(value);
+            this.output.appendLine(`device clipboard -> host (${value.length} chars)`);
+          }
+        }
+      } catch (error) {
+        this.output.appendLine(`device clipboard stream ended: ${String(error)}`);
+      } finally {
+        reader.releaseLock();
+      }
+    })();
+  }
+
+  private async pasteFromHostClipboard(): Promise<void> {
+    const controller = this.scrcpyClient?.controller;
+    if (!controller) {
+      return;
+    }
+    const text = await vscode.env.clipboard.readText();
+    if (!text) {
+      return;
+    }
+    this.lastSyncedClipboardText = text;
+    try {
+      await controller.setClipboard({ sequence: 0n, paste: true, content: text });
+    } catch (error) {
+      this.output.appendLine(`setClipboard failed, typing text instead: ${String(error)}`);
+      await this.injectKeyboardText(text);
+    }
+  }
+
   private async injectKeyboardText(text: string): Promise<void> {
     const controller = this.scrcpyClient?.controller;
     const serial = this.currentSerial;
@@ -1026,6 +1139,24 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     const serial = this.currentSerial;
     if (!serial || (message.repeat && message.action !== "down")) {
       return;
+    }
+
+    const hid = this.hidKeyboard;
+    if (hid && controller) {
+      // A UHID keyboard repeats keys on the device side while held.
+      if (message.repeat) {
+        return;
+      }
+      const report = hid.handleKey(message.code, message.action);
+      if (report) {
+        try {
+          await controller.uHidInput({ id: UHidKeyboardId, data: report });
+          return;
+        } catch (error) {
+          this.output.appendLine(`UHID input failed (${message.code}), falling back to key injection: ${String(error)}`);
+          this.hidKeyboard = undefined;
+        }
+      }
     }
 
     const metaState = ((

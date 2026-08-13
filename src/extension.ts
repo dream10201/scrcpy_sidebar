@@ -26,6 +26,7 @@ function getConfig(): ExtensionConfig {
     audioEnabled: config.get("audioEnabled", false),
     audioCodec: config.get("audioCodec", "aac"),
     adaptiveQuality: config.get("adaptiveQuality", true),
+    uhidKeyboard: config.get("uhidKeyboard", true),
   };
 }
 

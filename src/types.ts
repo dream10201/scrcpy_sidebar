@@ -18,6 +18,7 @@ export interface ExtensionConfig {
   audioEnabled: boolean;
   audioCodec: "opus" | "aac";
   adaptiveQuality: boolean;
+  uhidKeyboard: boolean;
 }
 
 export interface DeviceSummary {
@@ -43,6 +44,7 @@ export interface StreamConfig {
   audioEnabled?: boolean;
   audioCodec?: "opus" | "aac";
   adaptiveQuality?: boolean;
+  uhidKeyboard?: boolean;
 }
 
 export interface StreamStartPayload {
@@ -90,6 +92,8 @@ export type WebviewToExtensionMessage =
   | { type: "resize-display"; width: number; height: number }
   | { type: "key"; key: "back" | "home" | "appSwitch" | "power" }
   | { type: "keyboard-text"; text: string }
+  | { type: "keyboard-reset" }
+  | { type: "clipboard-paste" }
   | {
       type: "keyboard-event";
       action: "down" | "up";
