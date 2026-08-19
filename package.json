@@ -74,12 +74,12 @@
         "scrcpySidebar.adbHost": {
           "type": "string",
           "default": "127.0.0.1",
-          "description": "ADB server host."
+          "description": "ADB server host. 未显式设置时读取 ANDROID_ADB_SERVER_ADDRESS。"
         },
         "scrcpySidebar.adbPort": {
           "type": "number",
           "default": 5037,
-          "description": "ADB server port."
+          "description": "ADB server port. 未显式设置时读取 ANDROID_ADB_SERVER_PORT（或地址中的 host:port）。"
         },
         "scrcpySidebar.scrcpyServerVersion": {
           "type": "string",

@@ -4,11 +4,44 @@ import { randomBytes } from "node:crypto";
 import { ScrcpySidebarSession } from "./session";
 import type { ExtensionConfig, WebviewToExtensionMessage } from "./types";
 
+function defaultAdbServer(): { host: string; port: number } {
+  // 与 adb 客户端一致：优先 ANDROID_ADB_SERVER_ADDRESS / ANDROID_ADB_SERVER_PORT，
+  // 地址也兼容 host:port 写法
+  let host = "127.0.0.1";
+  let port = 5037;
+  const envAddr = process.env.ANDROID_ADB_SERVER_ADDRESS?.trim();
+  const envPort = Number(process.env.ANDROID_ADB_SERVER_PORT);
+  if (Number.isInteger(envPort) && envPort > 0) {
+    port = envPort;
+  }
+  if (envAddr) {
+    const match = /^(.+):(\d+)$/.exec(envAddr);
+    if (match && !envAddr.includes("]") && envAddr.indexOf(":") === envAddr.lastIndexOf(":")) {
+      host = match[1];
+      port = Number(match[2]);
+    } else {
+      host = envAddr;
+    }
+  }
+  return { host, port };
+}
+
 function getConfig(): ExtensionConfig {
   const config = vscode.workspace.getConfiguration("scrcpySidebar");
+  const adbDefaults = defaultAdbServer();
+  // package.json 声明了 default，需用 inspect 区分“用户显式设置”与“声明默认值”
+  const userSet = <T>(key: string): T | undefined => {
+    const info = config.inspect<T>(key);
+    return (
+      info?.workspaceFolderValue ??
+      info?.workspaceValue ??
+      info?.globalValue ??
+      undefined
+    );
+  };
   return {
-    adbHost: config.get("adbHost", "127.0.0.1"),
-    adbPort: config.get("adbPort", 5037),
+    adbHost: userSet<string>("adbHost") ?? adbDefaults.host,
+    adbPort: userSet<number>("adbPort") ?? adbDefaults.port,
     maxFps: config.get("maxFps", 30),
     maxSize: config.get("maxSize", 1280),
     videoBitRate: config.get("videoBitRate", 4000000),
