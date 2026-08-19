@@ -1635,6 +1635,11 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       audioCodec: this.currentStreamConfig.audioCodec ?? "aac",
       control: true,
       cleanup: true,
+      // 必须走 forward tunnel。reverse 模式下 AdbServerNodeTcpConnector 在本机开
+      // TCP 监听并让 adb server 把设备连接转发到 tcp:PORT——当 adb server 在远端
+      // (ANDROID_ADB_SERVER_ADDRESS)时它连的是 adb server 那台机器的 localhost，
+      // 连接被拒导致 scrcpy server 立即退出，残留的 reverse 还会挂死设备 transport。
+      tunnelForward: true,
       powerOn: !!this.currentStreamConfig.powerOnOnStart,
       powerOffOnClose: !!this.currentStreamConfig.powerOffOnClose && !this.reconnectingInternally,
       stayAwake: !!this.currentStreamConfig.keepScreenAwake,
