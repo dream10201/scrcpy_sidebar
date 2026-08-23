@@ -588,12 +588,18 @@ function runTouchpadHorizontalFling(startPoint: { x: number; y: number }, direct
 
   const directionSign = Math.sign(direction || 1);
   const edgeInset = Math.max(2, Math.round(canvas.width * 0.015));
+  // Anchor the swipe at the cursor when the fixed distance fits, sliding the start
+  // toward the far edge only as much as needed to keep the full travel on screen.
+  const travel = Math.min(canvas.width - edgeInset * 2, Math.round(canvas.width * 0.6));
+  const startX = directionSign > 0
+    ? Math.min(canvas.width - edgeInset, Math.max(startPoint.x, edgeInset + travel))
+    : Math.max(edgeInset, Math.min(startPoint.x, canvas.width - edgeInset - travel));
   const start = clampCanvasPoint({
-    x: directionSign > 0 ? canvas.width - edgeInset : edgeInset,
+    x: startX,
     y: Math.max(canvas.height * 0.18, Math.min(canvas.height * 0.82, startPoint.y)),
   });
   const end = clampCanvasPoint({
-    x: directionSign > 0 ? edgeInset : canvas.width - edgeInset,
+    x: start.x - directionSign * travel,
     y: start.y,
   });
   const points = [
