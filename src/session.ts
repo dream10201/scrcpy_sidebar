@@ -827,17 +827,19 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = undefined;
-      if (isIpEndpoint(serial)) {
-        await this.connect(serial, name, this.forcedControlMode, this.currentStartAppPackage);
+      const devices = await this.getDevices();
+      const state = devices.find((device) => device.serial === serial)?.state;
+      if (state !== "device") {
+        this.output.appendLine(`auto reconnect skipped: ${serial} is ${state ?? "not listed"}`);
+        await this.post({ type: "devices", devices, currentSerial: serial });
+        await this.post({
+          type: "state",
+          status: "disconnected",
+          detail: `${serial} ${state ?? "不在设备列表中"}，请手动重连`,
+          mode: this.activeControlMode,
+        });
         return;
       }
-
-      try {
-        await this.client.reconnectDevice({ serial });
-      } catch (error) {
-        this.output.appendLine(`adb reconnect ${serial} failed: ${String(error)}`);
-      }
-      await sleep(500);
       await this.connect(serial, name, this.forcedControlMode, this.currentStartAppPackage);
     }, this.config.autoReconnectDelayMs);
   }
