@@ -94,7 +94,6 @@ npx @vscode/vsce package
 - `scrcpySidebar.videoBufferMs`
 - `scrcpySidebar.rootMode`
 - `scrcpySidebar.screenOffOnStart`
-- `scrcpySidebar.keepScreenAwake`
 - `scrcpySidebar.keepActive`
 - `scrcpySidebar.flexDisplay`
 - `scrcpySidebar.powerOnOnStart`
@@ -108,19 +107,17 @@ npx @vscode/vsce package
 - 默认使用更偏性能的投屏参数：`15 FPS`、`960` 最大尺寸、`2 Mbps` 码率
 - 默认先使用标准 scrcpy 控制，仅在标准输入注入被拒时自动切换 `su`
 - 默认客户端视频缓冲为 `50ms`
-- 默认开启“连接时阻止真机休眠”：同时使用 scrcpy 的 `stay_awake=true` 和临时 `screen_off_timeout=24h`，退出时由 scrcpy server 恢复原值
+- 不修改真机的 `stay_on_while_plugged_in` / `screen_off_timeout`，连接期间靠 `keep_active` 保活
 - 默认开启 scrcpy 4.0 `keep_active=true`
 - 默认关闭 Flex display；该模式会创建新的虚拟显示，更适合配合指定 App 使用
 - 手动开启 Flex display 后，选择设备时会先列出该设备可启动 App，并在连接后把选中的 App 启动到虚拟显示
 - 默认请求视频稳定后熄灭真机屏幕
 - 默认启动时不主动点亮屏幕，断开后主动熄屏
-- `scrcpySidebar.keepScreenAwake` 现在优先使用 scrcpy server 的 `stayAwake` 能力
 - 运行时修改播放参数会同步到侧边栏；修改 ADB Host、ADB Port 或 scrcpy-server 版本会重建会话
 
-侧边栏设置页当前只暴露 6 个常用开关：
+侧边栏设置页当前只暴露 5 个常用开关：
 
 - `连接后真机黑屏`
-- `连接时阻止真机休眠`
 - `Keep active`
 - `Flex display`
 - `断开后真机熄屏`

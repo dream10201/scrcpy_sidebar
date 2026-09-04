@@ -10,7 +10,6 @@ export interface ExtensionConfig {
   scrcpyServerVersion: string;
   rootMode: "auto" | "always" | "never";
   screenOffOnStart: boolean;
-  keepScreenAwake: boolean;
   keepActive: boolean;
   flexDisplay: boolean;
   powerOnOnStart: boolean;
@@ -36,7 +35,6 @@ export interface StreamConfig {
   videoBufferMs: number;
   rootMode?: "auto" | "always" | "never";
   screenOffOnStart?: boolean;
-  keepScreenAwake?: boolean;
   keepActive?: boolean;
   flexDisplay?: boolean;
   powerOnOnStart?: boolean;

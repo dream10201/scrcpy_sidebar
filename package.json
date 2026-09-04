@@ -141,11 +141,6 @@
           "default": true,
           "description": "Blank the physical device screen after the video stream is ready."
         },
-        "scrcpySidebar.keepScreenAwake": {
-          "type": "boolean",
-          "default": true,
-          "description": "Keep the physical device awake while connected. Uses scrcpy stay_awake and a temporary 24h screen_off_timeout."
-        },
         "scrcpySidebar.keepActive": {
           "type": "boolean",
           "default": true,

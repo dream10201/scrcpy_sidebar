@@ -44,7 +44,6 @@ const videoBufferInput = document.querySelector<HTMLInputElement>("#videoBufferI
 const codecInput = document.querySelector<HTMLSelectElement>("#codecInput")!;
 const rootModeInput = document.querySelector<HTMLSelectElement>("#rootModeInput")!;
 const screenOffInput = document.querySelector<HTMLInputElement>("#screenOffInput")!;
-const keepAwakeInput = document.querySelector<HTMLInputElement>("#keepAwakeInput")!;
 const keepActiveInput = document.querySelector<HTMLInputElement>("#keepActiveInput")!;
 const flexDisplayInput = document.querySelector<HTMLInputElement>("#flexDisplayInput")!;
 const powerOffOnCloseInput = document.querySelector<HTMLInputElement>("#powerOffOnCloseInput")!;
@@ -212,7 +211,6 @@ function setConfigInputs(config: StreamStartPayload["config"]): void {
   codecInput.value = config.videoCodec;
   rootModeInput.value = config.rootMode ?? "auto";
   screenOffInput.checked = config.screenOffOnStart ?? true;
-  keepAwakeInput.checked = config.keepScreenAwake ?? true;
   keepActiveInput.checked = config.keepActive ?? true;
   flexDisplayInput.checked = config.flexDisplay ?? false;
   powerOffOnCloseInput.checked = config.powerOffOnClose ?? true;
@@ -1025,7 +1023,6 @@ function applySettings(): void {
       videoCodec: codecInput.value as "h264" | "h265" | "av1",
       rootMode: rootModeInput.value as "auto" | "always" | "never",
       screenOffOnStart: screenOffInput.checked,
-      keepScreenAwake: keepAwakeInput.checked,
       keepActive: keepActiveInput.checked,
       flexDisplay: flexDisplayInput.checked,
       powerOffOnClose: powerOffOnCloseInput.checked,

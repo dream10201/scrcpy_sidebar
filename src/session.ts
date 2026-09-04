@@ -83,7 +83,6 @@ function shellEscape(argument: string): string {
   return `'${argument.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-const KeepAwakeScreenOffTimeoutMs = 24 * 60 * 60 * 1000;
 
 const StreamSettingKeys = [
   "maxFps",
@@ -93,7 +92,6 @@ const StreamSettingKeys = [
   "videoBufferMs",
   "rootMode",
   "screenOffOnStart",
-  "keepScreenAwake",
   "keepActive",
   "flexDisplay",
   "powerOnOnStart",
@@ -617,6 +615,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       this.warnIfBundledServerVersionMayDiffer();
       const serverPath = await this.pushServerToDevice(adb, serial);
       const rootAvailable = await this.checkRoot(adb);
+      await this.restoreLeftoverPowerSettings(adb);
       await this.prepareDevicePowerForStreaming(adb);
       const preferredMode =
         forcedMode
@@ -1324,6 +1323,30 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     return "unknown";
   }
 
+  // Earlier versions passed stay_awake / a 24h screen_off_timeout to scrcpy; the server's
+  // CleanUp skips restoring a setting that already held the target value at startup, so a
+  // single failed cleanup left the device unable to sleep permanently.
+  private async restoreLeftoverPowerSettings(
+    adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
+  ): Promise<void> {
+    const leftovers: Array<[namespace: string, key: string, leftover: string, restore: string]> = [
+      ["global", "stay_on_while_plugged_in", "7", "0"],
+      ["system", "screen_off_timeout", "86400000", "30000"],
+    ];
+    for (const [namespace, key, leftover, restore] of leftovers) {
+      try {
+        const current = (await this.runDeviceCommand(adb, ["settings", "get", namespace, key])).trim();
+        if (current !== leftover) {
+          continue;
+        }
+        this.output.appendLine(`restoring leftover ${namespace} ${key}=${current} to ${restore}`);
+        await this.runDeviceCommand(adb, ["settings", "put", namespace, key, restore]);
+      } catch (error) {
+        this.output.appendLine(`restoring ${key} failed: ${String(error)}`);
+      }
+    }
+  }
+
   private async prepareDevicePowerForStreaming(
     adb: Awaited<ReturnType<AdbServerClient["createAdb"]>>,
   ): Promise<void> {
@@ -1644,8 +1667,6 @@ export class ScrcpySidebarSession implements vscode.Disposable {
       tunnelForward: true,
       powerOn: !!this.currentStreamConfig.powerOnOnStart,
       powerOffOnClose: !!this.currentStreamConfig.powerOffOnClose && !this.reconnectingInternally,
-      stayAwake: !!this.currentStreamConfig.keepScreenAwake,
-      screenOffTimeout: this.currentStreamConfig.keepScreenAwake ? KeepAwakeScreenOffTimeoutMs : undefined,
       maxFps: this.currentStreamConfig.maxFps,
       maxSize: this.currentStreamConfig.maxSize,
       videoBitRate: this.currentStreamConfig.videoBitRate,
