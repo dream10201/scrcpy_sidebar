@@ -150,6 +150,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
   private connectInFlight = false;
   private pendingConnect?: { serial: string; name: string; forcedMode?: "standard" | "root"; startAppPackage?: string };
   private screenPowerOffPending = false;
+  private wokeDeviceForCapture = false;
   private displayOffEnforceTimer?: NodeJS.Timeout;
   private persistingConfig = false;
   private reconnectingInternally = false;
@@ -714,6 +715,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
             if (value.type === "data" && !this.firstVideoDataPacketReceived) {
               this.firstVideoDataPacketReceived = true;
               this.output.appendLine("first video packet received");
+              void this.requestDeviceScreenOffViaController("first video packet");
             }
             const packet: VideoPacketPayload = {
               type: value.type,
@@ -747,6 +749,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
         });
     } catch (error) {
       this.output.appendLine(`connect failed: ${String(error)}`);
+      await this.sleepDeviceIfLeftAwake(serial);
       if (error && typeof error === "object" && "output" in error) {
         this.output.appendLine(`scrcpy output: ${JSON.stringify((error as { output?: unknown }).output)}`);
       }
@@ -802,6 +805,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
 
   private async handleDisconnect(detail: string): Promise<void> {
     this.output.appendLine(`stream disconnected: ${detail}; packetsSent=${this.videoPacketsSent}`);
+    await this.sleepDeviceIfLeftAwake(this.currentSerial);
     await this.post({ type: "stream-stop", detail });
     await this.post({ type: "state", status: "disconnected", detail, mode: this.activeControlMode });
     await this.syncDeviceScreenState("unknown");
@@ -1366,10 +1370,23 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.output.appendLine("waking device briefly so capture can start");
     try {
       await this.runDeviceCommand(adb, ["input", "keyevent", "KEYCODE_WAKEUP"]);
+      this.wokeDeviceForCapture = true;
       await sleep(this.reconnectingInternally ? 1200 : 500);
     } catch (error) {
       this.output.appendLine(`temporary wake failed: ${String(error)}`);
     }
+  }
+
+  // The pre-capture wake is only ever undone by the controller's display-off command. If the
+  // session dies before that command lands (server start failure, network loss), put the
+  // device back to sleep over adb. KEYCODE_SLEEP never wakes an already sleeping device.
+  private async sleepDeviceIfLeftAwake(serial: string | undefined): Promise<void> {
+    if (!this.wokeDeviceForCapture || !serial || !this.currentStreamConfig.screenOffOnStart) {
+      return;
+    }
+    this.wokeDeviceForCapture = false;
+    this.output.appendLine("session ended before the display was blanked, putting device to sleep");
+    await this.injectKeyViaAdb(serial, "KEYCODE_SLEEP");
   }
 
   private async applyPendingScreenPowerOff(): Promise<void> {
@@ -1394,6 +1411,7 @@ export class ScrcpySidebarSession implements vscode.Disposable {
     this.output.appendLine(`requesting display power off via scrcpy controller (${reason})`);
     try {
       await controller.setScreenPowerMode(AndroidScreenPowerMode.Off);
+      this.wokeDeviceForCapture = false;
       await this.syncDeviceScreenState("off");
     } catch (error) {
       this.output.appendLine(`setScreenPowerMode failed: ${String(error)}`);
